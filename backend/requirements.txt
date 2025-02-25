@@ -1,0 +1,12 @@
+fastapi
+uvicorn
+openai
+pydantic
+python-dotenv
+sqlalchemy
+aiohttp
+Pillow
+torch
+transformers
+pytest
+pytest-asyncio 
