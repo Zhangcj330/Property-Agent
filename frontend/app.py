@@ -10,17 +10,15 @@ BACKEND_URL = "http://localhost:8000"
 def init_session_state():
     if 'messages' not in st.session_state:
         st.session_state.messages = []
-    if 'current_preferences' not in st.session_state:
-        st.session_state.current_preferences = None
-    if 'properties' not in st.session_state:
-        st.session_state.properties = []
-
-def add_message(role: str, content: str):
-    st.session_state.messages.append({"role": role, "content": content})
-
-def display_chat_message(role: str, content: str):
-    with st.chat_message(role):
-        st.write(content)
+    if 'preferences' not in st.session_state:
+        st.session_state.preferences = {
+            'location': '',
+            'min_price': None,
+            'max_price': None,
+            'min_beds': None,
+            'property_type': None,
+            'must_have_features': []
+        }
 
 def display_property_in_chat(property: Dict):
     with st.chat_message("assistant"):
@@ -42,43 +40,102 @@ def display_property_in_chat(property: Dict):
                     st.write(f"**Description:** {property['description']}")
                     st.write(f"**Property Type:** {property['property_type'].title()}")
 
-def process_chat_response(response: str, preferences: Dict):
-    """Process the chat response and preferences"""
-    with st.chat_message("assistant"):
-        st.write(response)
+def show_sidebar():
+    """Display and handle sidebar filters"""
+    with st.sidebar:
+        st.header("🔍 Property Filters")
         
-        # If we have preferences, show them in an expander
-        if preferences and any(preferences.values()):
-            with st.expander("📋 I understood these preferences"):
-                st.json(preferences)
-            
-            # If we have complete preferences, show property recommendations
-            if all(k in preferences and preferences[k] for k in ['location', 'max_price', 'min_bedrooms']):
-                show_recommendations(preferences)
+        # Location filter
+        location = st.text_input(
+            "Location", 
+            value=st.session_state.preferences['location'],
+            placeholder="Enter city or area"
+        )
+        
+        # Price range
+        st.write("Price Range ($)")
+        col1, col2 = st.columns(2)
+        with col1:
+            min_price = st.number_input(
+                "Min Price",
+                min_value=0,
+                step=50000,
+                value=st.session_state.preferences['min_price'] or 0
+            )
+        with col2:
+            max_price = st.number_input(
+                "Max Price",
+                min_value=0,
+                step=50000,
+                value=st.session_state.preferences['max_price'] or 0
+            )
+        
+        # Bedrooms
+        min_beds = st.number_input(
+            "Minimum Bedrooms",
+            min_value=0,
+            value=st.session_state.preferences['min_beds'] or 0
+        )
+        
+        # Property Type
+        property_type = st.multiselect(
+            "Property Type",
+            options=['Any', 'house', 'apartment', 'condo', 'townhouse'],
+            default=st.session_state.preferences['property_type']
+        )
+        
+        # Features
+        features = st.multiselect(
+            "Must-Have Features",
+            options=['Garage', 'Garden', 'Pool', 'Balcony', 'Parking'],
+            default=st.session_state.preferences['must_have_features']
+        )
+        
+        # Apply filters button
+        if st.button("Apply Filters"):
+            # Update preferences
+            st.session_state.preferences.update({
+                'location': location,
+                'min_price': min_price if min_price > 0 else None,
+                'max_price': max_price if max_price > 0 else None,
+                'min_beds': min_beds if min_beds > 0 else None,
+                'property_type': property_type if property_type else None,
+                'must_have_features': features
+            })
+            st.rerun()
 
-def show_recommendations(preferences: Dict):
-    """Show property recommendations based on preferences"""
+def process_chat_message(message: str):
+    """Process chat message and get response from backend"""
     try:
-        recommendations = requests.post(
-            f"{BACKEND_URL}/recommend",
-            json=preferences
-        ).json()
+        # Send both message and current preferences to backend
+        response = requests.post(
+            f"{BACKEND_URL}/chat",
+            json={
+                "user_input": message,
+                "preferences": st.session_state.preferences
+            }
+        )
         
-        if recommendations:
-            st.write(f"📍 I found {len(recommendations)} properties matching your criteria:")
-            for prop in recommendations[:3]:  # Show top 3
-                display_property_in_chat(prop)
+        if response.status_code == 200:
+            chat_response = response.json()
+            # Update preferences with any new information
+            if chat_response["preferences"]:
+                st.session_state.preferences.update(chat_response["preferences"])
+            return chat_response["response"]
         else:
-            st.write("I couldn't find any properties matching exactly these criteria. Would you like to adjust your preferences?")
+            return "Sorry, I'm having trouble understanding. Could you rephrase that?"
     except Exception as e:
-        st.error("Sorry, I couldn't fetch property recommendations at the moment.")
+        print(f"Error in process_chat_message: {e}")
+        return "Sorry, I'm having technical difficulties. Please try again."
 
 def main():
     st.set_page_config(page_title="Property Finder Chat", layout="wide")
+    init_session_state()
     
-    if "messages" not in st.session_state:
-        st.session_state.messages = []
+    # Show sidebar with filters
+    show_sidebar()
     
+    # Main chat interface
     st.title("🏠 Property Finder Chat")
     
     # Display chat history
@@ -94,22 +151,12 @@ def main():
             st.write(prompt)
         
         # Get response from backend
-        try:
-            response = requests.post(
-                f"{BACKEND_URL}/extract-preferences",
-                params={"user_input": prompt}
-            )
-            
-            if response.status_code == 200:
-                chat_response = response.json()
-                st.session_state.messages.append({"role": "assistant", "content": chat_response["response"]})
-                with st.chat_message("assistant"):
-                    st.write(chat_response["response"])
+        response = process_chat_message(prompt)
         
-            else:
-                st.error("Sorry, I'm having trouble understanding. Could you rephrase that?")
-        except Exception as e:
-            st.error("Sorry, I'm having technical difficulties. Please try again.")
+        # Add assistant response to chat
+        st.session_state.messages.append({"role": "assistant", "content": response})
+        with st.chat_message("assistant"):
+            st.write(response)
 
     # First-time user help message
     if not st.session_state.messages:
@@ -126,4 +173,4 @@ def main():
         """)
 
 if __name__ == "__main__":
-    main() 
+    main()

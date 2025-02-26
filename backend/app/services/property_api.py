@@ -32,22 +32,3 @@ class PropertyAPI:
                     return await response.json()
                 else:
                     return []
-
-    async def sync_to_db(self, db: Session, properties: List[Dict]):
-        """Sync properties from API to database"""
-        for prop_data in properties:
-            db_property = Property(
-                external_id=prop_data["id"],
-                address=prop_data["address"],
-                city=prop_data["city"],
-                state=prop_data["state"],
-                price=prop_data["price"],
-                bedrooms=prop_data["bedrooms"],
-                bathrooms=prop_data["bathrooms"],
-                square_footage=prop_data["square_footage"],
-                property_type=prop_data["property_type"],
-                description=prop_data["description"],
-                image_urls=prop_data["image_urls"]
-            )
-            db.add(db_property)
-        await db.commit() 

@@ -1,6 +1,9 @@
 fastapi
 uvicorn
 openai
+langchain
+langchain-community
+langgraph
 pydantic
 python-dotenv
 sqlalchemy
@@ -9,4 +12,8 @@ Pillow
 torch
 transformers
 pytest
-pytest-asyncio 
+pytest-asyncio
+beautifulsoup4
+requests
+fake-useragent
+pandas 

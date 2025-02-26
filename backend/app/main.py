@@ -1,6 +1,5 @@
 from fastapi import FastAPI, Depends, HTTPException
 from sqlalchemy.orm import Session
-from .database import get_db, engine
 from .services.property_api import PropertyAPI
 from .services.image_processor import ImageProcessor
 from .services.recommender import PropertyRecommender
@@ -8,8 +7,9 @@ import os
 from .models import Property, UserPreferences
 from .llm_service import LLMService
 import os
-from typing import List
+from typing import List, Dict, Optional
 from .config import settings
+from pydantic import BaseModel
 
 # Create database tables
 
@@ -41,16 +41,30 @@ properties = [
     # Add more mock properties...
 ]
 
-@app.post("/extract-preferences")
-async def extract_preferences(user_input: str):
+class ChatInput(BaseModel):
+    user_input: str
+    preferences: Optional[Dict] = None
+
+@app.post("/chat")
+async def chat_endpoint(chat_input: ChatInput):
+    """Handle chat messages and preference updates"""
+    response, preferences = await llm_service.process_user_input(
+        chat_input.user_input,
+        chat_input.preferences
+    )
+    return {
+        "response": response,
+        "preferences": preferences
+    }
+
+@app.post("/update-preferences")
+async def update_preferences(preferences: UserPreferences):
+    """Handle sidebar filter updates"""
     try:
-        response, preferences = await llm_service.process_user_input(
-            user_input,
-            # You could also pass chat history from the request if needed
-        )
+        # Validate and store preferences
         return {
-            "response": response,
-            "preferences": preferences
+            "status": "success",
+            "preferences": preferences.dict()
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
