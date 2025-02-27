@@ -1,5 +1,5 @@
-from typing import Dict, Tuple, List, Any, Annotated
-from pydantic import BaseModel, Field
+from typing import Dict, Tuple, List, Annotated, Optional
+from pydantic import BaseModel
 import operator
 import json
 from typing_extensions import TypedDict
@@ -10,14 +10,15 @@ from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 from langchain.memory import ChatMessageHistory
 from langchain_core.output_parsers import JsonOutputParser
 from langgraph.graph import StateGraph, MessagesState, START, END
-from .config import settings
-from .models import UserPreferences
-from .services.property_scraper import PropertyScraper
+from app.config import settings
+from app.services.property_scraper import PropertyScraper
+from app.models import UserPreferences, PropertySearchRequest
 
 # Graph state
 class State(TypedDict):
     messages: MessagesState
-    preferences: Dict
+    userpreferences: Dict
+    propertysearchrequest: Dict
     current_field: str
     completed_fields: List[str]
     is_complete: bool
@@ -28,6 +29,10 @@ class WorkerState(TypedDict):
     field: str  # Changed from section to field
     completed_fields: Annotated[list, operator.add]
 
+class UserPreferencesSearch(BaseModel):
+    user_preferences: UserPreferences
+    search_parameters: PropertySearchRequest
+
 # Default LLM
 llm = ChatOpenAI(
     api_key=settings.GEMINI_API_KEY,
@@ -35,65 +40,81 @@ llm = ChatOpenAI(
     model="gemini-2.0-flash"
 )
 
+
+
 # Structured output parser
-def create_agent_graph():
+def PreferenceGraph():
     # Worker: Extract preferences from input
     def extract_worker(state: State) -> State:
-        """Extract preferences from user input using conversation context"""
-        parser = JsonOutputParser(pydantic_object=UserPreferences)
+        """Extract preferences and search criteria from user input"""
+        parser = JsonOutputParser(pydantic_object=UserPreferencesSearch)
         messages = state["messages"]
-        current_preferences = state["preferences"]
+        current_preferences = state["userpreferences"]
+        current_search_params = state["propertysearchrequest"]
         chat_history = state.get("chat_history", [])
         
         if not messages or not isinstance(messages[-1], HumanMessage):
             return state
             
         try:
-            # First, extract preferences from the entire conversation context
+            # Extract both user preferences and search parameters
             extraction_prompt = """You are an expert Australian real estate consultant and demographic analyst.
-            Analyze the conversation to:
-            1. Extract real estate preferences
-            2. Infer demographic details (age, income, lifestyle, family status) from the conversation
-            3. Recommend suitable suburbs based on the demographic profile and preferences
-            
-            For location recommendations:
-            - Consider factors like proximity to schools, public transport, entertainment
-            - Match suburbs to the likely demographic profile
-            - Format location as STATE-SUBURB-POSTCODE (e.g., "NSW-Chatswood-2067")
-            
-            You must respond with a JSON object containing:
+            Analyze the conversation to extract two types of information:
+
+            1. Detailed user preferences with importance weights (0.0-1.0):
+            {
+                "Location": ["specific-location", weight],
+                "Price": ["price-range", weight],
+                "Size": ["size-requirements", weight],
+                "Layout": ["layout-preferences", weight],
+                "PropertyType": ["type-preference", weight],
+                "Features": ["desired-features", weight],
+                "Condition": ["condition-preference", weight],
+                "Environment": ["environment-requirements", weight],
+                "Style": ["style-preference", weight],
+                "Quality": ["quality-requirements", weight],
+                "Room": ["room-requirements", weight],
+                "SchoolDistrict": ["school-requirements", weight],
+                "Community": ["community-preferences", weight],
+                "Transport": ["transport-requirements", weight],
+                "Other": ["other-preferences", weight]
+            }
+
+            2. Specific search parameters:
             {
                 "location": "STATE-SUBURB-POSTCODE",
                 "suburb": "suburb name",
                 "state": "state code",
                 "postcode": number,
-                "max_price": number or null,
                 "min_price": number or null,
+                "max_price": number or null,
                 "min_bedrooms": number or null,
-                "property_type": "house/apartment/etc" or null,
-                "must_have_features": [],
-                "demographic_analysis": {
-                    "likely_age_group": "string",
-                    "estimated_income": "string",
-                    "lifestyle_preferences": "string",
-                    "family_status": "string"
-                },
-                "suburb_recommendation_reason": "string"
+                "property_type": "house/apartment/etc" or null
             }
+
+            For location format:
+            - Use STATE-SUBURB-POSTCODE format (e.g., "NSW-Chatswood-2067")
+            - Break down into suburb, state, and postcode components
             
-            If the user hasn't specified a location but has given enough context, recommend a suitable suburb.
-            Include only fields that are clearly mentioned or can be confidently inferred.
-            DO NOT generate questions or conversational responses."""
+            For preferences:
+            - Assign higher weights (0.8-1.0) to explicitly stated requirements
+            - Use medium weights (0.4-0.7) for inferred preferences
+            - Use lower weights (0.1-0.3) for contextual hints
             
-            # Build conversation context
+            Return both objects in the format:
+            {
+                "user_preferences": {preference object},
+                "search_parameters": {search parameters object}
+            }
+            """
+            
+            # Build conversation context 
             conversation = "\nConversation:\n"
             for msg in chat_history:
                 conversation += f"{msg['role'].title()}: {msg['content']}\n"
-            
-            # Add current message
             conversation += f"User: {messages[-1].content}\n"
             
-            # Extract preferences
+            # Get LLM response
             response = llm.invoke([
                 SystemMessage(content=extraction_prompt),
                 HumanMessage(content=conversation)
@@ -103,17 +124,28 @@ def create_agent_graph():
             print("LLM response:", response.content.strip())
             
             # Parse extracted preferences
-            new_prefs = parser.invoke(response)
-            print("Parsed preferences:", new_prefs)
+            output = parser.invoke(response)
+            # Extract the relevant portions and parse them
+            new_search_params = output["search_parameters"]
+            new_user_prefs = output["user_preferences"]
+            print("Parsed search_params:", new_search_params)
+            print("Parsed user_prefs:", new_user_prefs)
             
             # Update preferences, keeping existing values if not in new extraction
             merged_preferences = {**current_preferences}
-            for key, value in new_prefs.items():
-                if value is not None:  # Only update if new value is not None
+            for key, value in new_user_prefs.items():
                     merged_preferences[key] = value
-            
-            state["preferences"] = merged_preferences
-            
+            print("Merged preferences:", merged_preferences)
+                        
+            merged_search_params = {**current_search_params}
+            for key, value in new_search_params.items():
+                    merged_search_params[key] = value
+                    
+            print("Merged merged_search_params:", merged_search_params)
+            # Update state with merged values
+            state["userpreferences"] = merged_preferences
+            state["propertysearchrequest"] = merged_search_params
+            print("State:", state)
         except Exception as e:
             print(f"Error in extract_worker: {e}")
         
@@ -122,13 +154,13 @@ def create_agent_graph():
     # Worker: Check if all required fields are present
     def check_worker(state: State) -> State:
         """Check if all required preferences are present"""
-        preferences = state["preferences"]
+        search_params = state["propertysearchrequest"]
         required_fields = ["location", "max_price", "property_type"]
         
         # Check each required field
         missing = []
         for field in required_fields:
-            if not preferences.get(field):
+            if search_params.get(field) is None:
                 missing.append(field)
         
         if missing:
@@ -138,7 +170,7 @@ def create_agent_graph():
             print(f"Missing fields: {missing}")
         else:
             state["is_complete"] = True
-            print("All required fields collected:", preferences)
+            print("All required fields collected:", search_params)
             
         return state
 
@@ -146,7 +178,7 @@ def create_agent_graph():
     def question_worker(state: State) -> State:
         """Generate follow-up question for missing information"""
         current_field = state["current_field"]
-        preferences = state["preferences"]
+        search_params = state["propertysearchrequest"]
         
         # Question templates based on UserPreferences fields
         questions = {
@@ -163,7 +195,7 @@ def create_agent_graph():
             Ask for the missing information naturally and conversationally.
             Keep the question focused and clear."""),
             HumanMessage(content=f"""
-            The user's current preferences: {json.dumps(preferences)}
+            The user's current preferences: {search_params}
             Ask about: {questions[current_field]}
             """)
         ])
@@ -193,20 +225,20 @@ def create_agent_graph():
 
 class LLMService:
     def __init__(self):
-        self.graph = create_agent_graph()
+        self.graph = PreferenceGraph()
         self.chat_history = []  # Initialize chat history
         self.property_scraper = PropertyScraper()  # Initialize property scraper
     
-    async def process_user_input(self, user_input: str, preferences: Dict = None) -> Tuple[str, Dict]:
+    async def process_user_input(self, user_input: str, preferences: Dict = None, search_params: Dict = None) -> Tuple[str, Dict]:
         """Process user input through the graph"""
-        
         # Add user message to chat history
         self.chat_history.append({"role": "user", "content": user_input})
         
         # Initialize state with chat history
         state = State(
             messages=[HumanMessage(content=user_input)],
-            preferences=preferences or {},
+            userpreferences=preferences or UserPreferences(),
+            propertysearchrequest=search_params or PropertySearchRequest(),
             current_field=None,
             completed_fields=[],
             is_complete=False,
@@ -219,42 +251,42 @@ class LLMService:
         
         # Get last response and updated preferences
         last_message = final_state["messages"][-1].content if final_state["messages"] else ""
-        updated_preferences = final_state["preferences"]
-        
+        updated_preferences = final_state["userpreferences"]
+        updated_search_params = final_state["propertysearchrequest"]
         # If we have complete preferences, search for properties
-        if final_state["is_complete"]:
-            try:    
-                # Search for properties using scraper
-                properties = await self.property_scraper.search_properties(
-                    location=updated_preferences.get("location"),
-                    min_price=updated_preferences.get("min_price"),
-                    max_price=updated_preferences.get("max_price"),
-                    min_beds=updated_preferences.get("min_bedrooms"),
-                    property_type=updated_preferences.get("property_type"),
-                    max_results=5  # Limit results
-                )
-                
-                # Format property results into response
-                if properties:
-                    property_summary = "\n\nHere are some properties that match your criteria:\n"
-                    for i, prop in enumerate(properties, 1):
-                        property_summary += f"\n{i}. {prop['address']}"
-                        if prop['price']:
-                            property_summary += f"\nPrice: {prop['price']}"
-                        property_summary += f"\nBedrooms: {prop['bedrooms']}"
-                        if prop['property_type']:
-                            property_summary += f"\nType: {prop['property_type']}"
-                        property_summary += "\n"
+        # if final_state["is_complete"]:
+        #     try:    
+        #         # Search for properties using scraper
+        #         properties = await self.property_scraper.search_properties(
+        #             location=updated_preferences.get("location"),
+        #             min_price=updated_preferences.get("min_price"),
+        #             max_price=updated_preferences.get("max_price"),
+        #             min_beds=updated_preferences.get("min_bedrooms"),
+        #             property_type=updated_preferences.get("property_type"),
+        #             max_results=5  # Limit results
+        #         )
+        #         print(properties)
+        #         # Format property results into response
+        #         if properties:
+        #             property_summary = "\n\nHere are some properties that match your criteria:\n"
+        #             for i, prop in enumerate(properties, 1):
+        #                 property_summary += f"\n{i}. {prop['address']}"
+        #                 if prop['price']:
+        #                     property_summary += f"\nPrice: {prop['price']}"
+        #                 property_summary += f"\nBedrooms: {prop['bedrooms']}"
+        #                 if prop['property_type']:
+        #                     property_summary += f"\nType: {prop['property_type']}"
+        #                 property_summary += "\n"
                     
-                    last_message += property_summary
-                else:
-                    last_message += "\n\nI couldn't find any properties matching your criteria at the moment."
+        #             last_message += property_summary
+        #         else:
+        #             last_message += "\n\nI couldn't find any properties matching your criteria at the moment."
                 
-            except Exception as e:
-                print(f"Error searching properties: {e}")
-                last_message += "\n\nI encountered an error while searching for properties."
+        #     except Exception as e:
+                # print(f"Error searching properties: {e}")
+                # last_message += "\n\nI encountered an error while searching for properties."
         
         # Add assistant response to chat history
         self.chat_history.append({"role": "assistant", "content": last_message})
         
-        return last_message, updated_preferences
+        return last_message, updated_preferences, updated_search_params

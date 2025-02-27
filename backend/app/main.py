@@ -3,101 +3,106 @@ from sqlalchemy.orm import Session
 from .services.property_api import PropertyAPI
 from .services.image_processor import ImageProcessor
 from .services.recommender import PropertyRecommender
-import os
-from .models import Property, UserPreferences
+from .models import Property, UserPreferences, PropertySearchRequest, PropertySearchResponse
 from .llm_service import LLMService
-import os
+from pydantic import BaseModel, Field
 from typing import List, Dict, Optional
-from .config import settings
-from pydantic import BaseModel
-
-# Create database tables
+from .services.property_scraper import PropertyScraper
 
 app = FastAPI()
 
 # Initialize services
 # property_api = PropertyAPI(settings.DOMAIN_API_KEY)
-# image_processor = ImageProcessor()
-# recommender = PropertyRecommender()
+image_processor = ImageProcessor()
+recommender = PropertyRecommender()
+property_scraper = PropertyScraper()
 
 # Initialize LLM service without passing API key
 llm_service = LLMService()
 
-# Mock database
-properties = [
-    Property(
-        id="1",
-        address="123 Main St",
-        city="San Francisco",
-        state="CA",
-        price=1200000,
-        bedrooms=3,
-        bathrooms=2,
-        square_footage=1500,
-        property_type="house",
-        description="Beautiful home in prime location",
-        image_url="https://example.com/image1.jpg"
-    ),
-    # Add more mock properties...
-]
-
 class ChatInput(BaseModel):
     user_input: str
     preferences: Optional[Dict] = None
+    search_params: Optional[Dict] = None
 
-@app.post("/chat")
+# API Routers
+# v1 API endpoints
+v1_prefix = "/api/v1"
+
+@app.post(f"{v1_prefix}/chat", tags=["Chat"])
 async def chat_endpoint(chat_input: ChatInput):
     """Handle chat messages and preference updates"""
-    response, preferences = await llm_service.process_user_input(
+    print(chat_input)
+    response, preferences, search_params = await llm_service.process_user_input(
         chat_input.user_input,
-        chat_input.preferences
+        chat_input.preferences,
+        chat_input.search_params
     )
     return {
         "response": response,
-        "preferences": preferences
+        "preferences": preferences if preferences else None,
+        "search_params": search_params if search_params else None
     }
 
-@app.post("/update-preferences")
+
+@app.post(f"{v1_prefix}/preferences", tags=["Preferences"])
 async def update_preferences(preferences: UserPreferences):
     """Handle sidebar filter updates"""
     try:
         # Validate and store preferences
         return {
             "status": "success",
-            "preferences": preferences.dict()
+            "preferences": preferences.model_dump()
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/recommend")
+@app.post(f"{v1_prefix}/recommend", tags=["Recommendations"])
 async def recommend_properties(preferences: UserPreferences) -> List[Property]:
-    matching_properties = []
-    
-    for property in properties:
-        if (property.price <= preferences.max_price and 
-            property.bedrooms >= preferences.min_bedrooms and 
-            preferences.location.lower() in property.city.lower()):
-            matching_properties.append(property)
-    
-    return matching_properties 
+    """Get property recommendations based on user preferences using LLM analysis"""
+    try:
+        recommendations = await recommender.get_recommendations(
+            properties=properties,  # Using the mock properties list
+            preferences=preferences
+        )
+        return recommendations
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
-# @app.get("/sync-properties")
-# async def sync_properties(db: Session = Depends(get_db)):
-#     """Sync properties from external API to database"""
-#     properties = await property_api.search_properties(location="San Francisco")
-#     await property_api.sync_to_db(db, properties)
-#     return {"message": "Properties synced successfully"}
+@app.post(f"{v1_prefix}/process-image", tags=["Image Processing"])
+async def process_image(image_url: str):
+    """Process a property image and return analysis results"""
+    try:
+        result = await image_processor.analyze_property_image(image_url)
+        return {
+            "status": "success",
+            "analysis": result
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
-# @app.get("/analyze-property-images/{property_id}")
-# async def analyze_images(property_id: int, db: Session = Depends(get_db)):
-#     """Analyze property images"""
-#     property = db.query(db_models.DBProperty).filter(db_models.DBProperty.id == property_id).first()
-#     if not property:
-#         raise HTTPException(status_code=404, detail="Property not found")
-    
-#     analysis_results = []
-#     for image_url in property.image_urls.split(","):
-#         result = await image_processor.analyze_property_image(image_url)
-#         analysis_results.append(result)
-    
-#     return analysis_results 
+@app.post(f"{v1_prefix}/properties/search", response_model=List[PropertySearchResponse], tags=["Properties"])
+async def search_properties(search_params: PropertySearchRequest):
+    """
+    Search for properties based on given criteria
+    """
+    try:
+        results = await property_scraper.search_properties(
+            location=search_params.location,
+            min_price=search_params.min_price,
+            max_price=search_params.max_price,
+            min_beds=search_params.min_beds,
+            property_type=search_params.property_type,
+            max_results=search_params.max_results
+        )
+        
+        if not results:
+            return []
+            
+        return [PropertySearchResponse(**result) for result in results]
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error searching properties: {str(e)}"
+        )

@@ -6,6 +6,7 @@ import random
 from typing import List, Dict, Optional
 from fake_useragent import UserAgent
 import logging
+import re
 
 logging.basicConfig(level=logging.INFO)
 
@@ -46,7 +47,6 @@ class PropertyScraper:
         # Add property type filter
         if property_type:
             search_url += f"&propertyTypes={property_type.capitalize()}"
-            
         return search_url
         
     def _get_page(self, url: str) -> Optional[str]:
@@ -64,39 +64,58 @@ class PropertyScraper:
     def _parse_listing(self, listing) -> Optional[Dict]:
         """Parse individual listing element"""
         try:
-            return {
+            return{
+                'listing_id': listing.get('data-testid'),
+                # Price
                 'price': (listing.find('p', {'data-testid': 'property-card-title'}).get_text(strip=True) 
                          if listing.find('p', {'data-testid': 'property-card-title'}) 
-                         else None),
+                         else 'No price'),
                 
+                # Address
                 'address': (listing.find('h2').get_text(strip=True)
                            if listing.find('h2')
-                           else None),
+                           else 'No address'),
                 
-                'bedrooms': int((listing.find('div', {'data-testid': 'a-bedrooms'}).find('span').get_text(strip=True)
+                # Property features
+                'bedrooms': (listing.find('div', {'data-testid': 'a-bedrooms'}).find('span').get_text(strip=True)
                             if listing.find('div', {'data-testid': 'a-bedrooms'})
-                            else '0')),
+                            else '0'),
                 
-                'bathrooms': int((listing.find('div', {'data-testid': 'a-bathrooms'}).find('span').get_text(strip=True)
+                'bathrooms': (listing.find('div', {'data-testid': 'a-bathrooms'}).find('span').get_text(strip=True)
                              if listing.find('div', {'data-testid': 'a-bathrooms'})
-                             else '0')),
+                             else '0'),
                 
-                'car_parks': int((listing.find('div', {'data-testid': 'a-carparks'}).find('span').get_text(strip=True)
+                'car_parks': (listing.find('div', {'data-testid': 'a-carparks'}).find('span').get_text(strip=True)
                              if listing.find('div', {'data-testid': 'a-carparks'})
-                             else '0')),
+                             else '0'),
                 
+                # Land size
                 'land_size': (listing.find('div', {'data-testid': 'a-land-size'}).find('span').get_text(strip=True)
                              if listing.find('div', {'data-testid': 'a-land-size'})
-                             else None),
+                             else 'No land size'),
                 
-                'property_type': (listing.find('span', class_='text-xs').get_text(strip=True).lower()
+                # Property type
+                'property_type': (listing.find('span', class_='text-xs').get_text(strip=True)
                                 if listing.find('span', class_='text-xs')
-                                else None),
+                                else 'No property type'),
                 
-                'image_url': (listing.find('img', {'class': 'image-gallery-image'})['src']
-                             if listing.find('img', {'class': 'image-gallery-image'})
-                             else None),
+                # Inspection date
+                'inspection_date': (listing.find('h4', {'data-testid': 'date-text-tag'}).get_text(strip=True)
+                                  if listing.find('h4', {'data-testid': 'date-text-tag'})
+                                  else 'No inspection date'),
+                
+                # Image URL
+                'image_urls': ([img['src'] for img in listing.find_all('img', {'class': 'image-gallery-image'})]
+                             if listing.find_all('img', {'class': 'image-gallery-image'})
+                             else ['No image available']),
+                
+                # Agent name
+                            # Agent name
+                'agent_name': (listing.find('div', {'data-testid': 'agency-image'}).find('img').get('alt')
+                                if listing.find('div', {'data-testid': 'agency-image'})
+                                else 'No Agent name')
             }
+            
         except Exception as e:
             logging.error(f"Error parsing listing: {str(e)}")
             return None
@@ -131,23 +150,20 @@ class PropertyScraper:
 
             # Parse the page
             soup = BeautifulSoup(html, 'html.parser')
-            listing_elements = soup.find_all(
-                'div', 
-                class_="relative flex flex-col bg-at-white rounded-none md-744:rounded-xl overflow-hidden cursor-pointer"
-            )
+            pattern = re.compile(r'listing-\d+')
+
+            listing_elements = soup.find_all('span', {'data-testid': pattern})
+
 
             # Parse and filter listings
             results = []
             for listing in listing_elements:
                 if len(results) >= max_results:
                     break
-                print(listing)
-                print(111111)
+
                 listing_data = self._parse_listing(listing)
                 if not listing_data:
                     continue
-                print(listing_data)
-                print(222222)
                 # Apply filters
                 
                 results.append(listing_data)
