@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 from .services.property_api import PropertyAPI
 from .services.image_processor import ImageProcessor, ImageAnalysisRequest
 from .services.recommender import PropertyRecommender
-from .models import Property, UserPreferences, PropertySearchRequest, PropertySearchResponse
+from .models import UserPreferences, PropertySearchRequest, PropertySearchResponse, PropertyAnalysis, PropertyAnalysisResponse
 from .llm_service import LLMService
 from pydantic import BaseModel, Field
 from typing import List, Dict, Optional
@@ -37,13 +37,52 @@ async def chat_endpoint(chat_input: ChatInput):
         chat_input.user_input,
         chat_input.preferences,
         chat_input.search_params
-    )   
-    return {
+    )
+
+    response_data = {
         "response": final_state["messages"][-1].content if final_state["messages"] else "",
         "preferences": final_state["userpreferences"] if final_state["userpreferences"] else None,
         "search_params": final_state["propertysearchrequest"] if final_state["propertysearchrequest"] else None
     }
 
+    # If we have search parameters, trigger the property search flow
+    if final_state.get("is_complete"):
+        try:
+            # 1. Search for properties
+            property_results = await search_properties(final_state["propertysearchrequest"])
+            
+            if property_results:
+                # 2. Process images and create PropertyAnalysisResponse objects
+                analyzed_properties: List[PropertyAnalysisResponse] = []
+                
+                for property in property_results:
+                    if property.image_urls:
+                        image_analysis = await process_image(
+                            ImageAnalysisRequest(image_urls=property.image_urls)
+                        )
+                        # Create PropertyAnalysisResponse object
+                        analyzed_property = PropertyAnalysisResponse(
+                            properties_search=property,
+                            image_analysis=image_analysis
+                        )
+                        analyzed_properties.append(analyzed_property)
+
+                # 3. Get recommendations based on preferences and enriched properties
+                if final_state.get("userpreferences") and analyzed_properties:
+                    recommendations = await recommend_properties(
+                        properties=analyzed_properties,
+                        preferences=final_state["userpreferences"]
+                    )
+                    response_data["recommendations"] = recommendations
+
+                response_data["properties"] = analyzed_properties
+
+        except Exception as e:
+            print(f"Error in property search flow: {str(e)}")
+            # Don't raise exception, just continue with chat response
+            pass
+
+    return response_data
 
 @app.post(f"{v1_prefix}/preferences", tags=["Preferences"])
 async def update_preferences(preferences: UserPreferences):
@@ -58,10 +97,14 @@ async def update_preferences(preferences: UserPreferences):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post(f"{v1_prefix}/recommend", tags=["Recommendations"])
-async def recommend_properties(preferences: UserPreferences) -> List[Property]:
+async def recommend_properties(
+    properties: List[PropertyAnalysisResponse], 
+    preferences: UserPreferences
+) -> List[PropertyAnalysisResponse]:
     """Get property recommendations based on user preferences using LLM analysis"""
     try:
         recommendations = await recommender.get_recommendations(  
+            properties=properties,
             preferences=preferences
         )
         return recommendations
@@ -69,19 +112,16 @@ async def recommend_properties(preferences: UserPreferences) -> List[Property]:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post(f"{v1_prefix}/process-image", tags=["Image Processing"])
-async def process_image(image_urls: ImageAnalysisRequest):
+async def process_image(image_urls: ImageAnalysisRequest) -> PropertyAnalysis:
     """Process a property image and return analysis results"""
     try:
         result = await image_processor.analyze_property_image(image_urls)
-        return {
-            "status": "success",
-            "analysis": result
-        }
+        return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post(f"{v1_prefix}/properties/search", response_model=List[PropertySearchResponse], tags=["Properties"])
-async def search_properties(search_params: PropertySearchRequest):
+async def search_properties(search_params: PropertySearchRequest) -> List[PropertySearchResponse]:
     """
     Search for properties based on given criteria
     """

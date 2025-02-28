@@ -57,10 +57,6 @@ class PropertyAnalysis(BaseModel):
 class ImageAnalysisRequest(BaseModel):
     image_urls: List[HttpUrl] = Field(..., description="List of URLs of property images to analyze")
 
-class ImageAnalysisResponse(BaseModel):
-    analysis: Optional[PropertyAnalysis] = None
-    error: Optional[str] = None
-
 class ImageProcessor:
     def __init__(self):
         # Configure LLM client
@@ -84,7 +80,7 @@ class ImageProcessor:
                 detail=f"Failed to retrieve image from {image_url}. Error: {str(e)}"
             )
 
-    async def analyze_property_image(self, request: ImageAnalysisRequest) -> ImageAnalysisResponse:
+    async def analyze_property_image(self, request: ImageAnalysisRequest) -> PropertyAnalysis:
         """Analyze property images and return structured analysis"""
         try:
             # Convert images to base64
@@ -120,8 +116,7 @@ class ImageProcessor:
             # Parse the response using the JsonOutputParser
             analysis = self.parser.parse(response.content)
             
-            return ImageAnalysisResponse(analysis=analysis)
+            return analysis
             
         except Exception as e:
-            return ImageAnalysisResponse(error=str(e))
-    
+            raise HTTPException(status_code=500, detail=str(e))

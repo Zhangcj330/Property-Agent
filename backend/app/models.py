@@ -1,19 +1,7 @@
 from pydantic import BaseModel, Field
 from typing import Optional, List, Dict, Tuple
 from typing_extensions import TypedDict
-
-class Property(BaseModel):
-    id: str
-    address: str
-    city: str
-    state: str
-    price: float
-    bedrooms: int
-    bathrooms: float
-    square_footage: float
-    property_type: str
-    description: str
-    image_url: Optional[str] = None
+from .services.image_processor import PropertyAnalysis
 
 class UserPreferences(TypedDict):
     Location: Tuple[Optional[str], float] = (None, 1.0)
@@ -56,3 +44,7 @@ class PropertySearchResponse(BaseModel):
     inspection_date: Optional[str]
     image_urls: Optional[List[str]]
     agent_name: Optional[str]
+
+class PropertyAnalysisResponse(TypedDict):
+    properties_search: PropertySearchResponse
+    image_analysis: PropertyAnalysis

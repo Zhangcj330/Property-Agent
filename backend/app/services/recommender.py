@@ -3,22 +3,19 @@ from pydantic import BaseModel, Field
 from langchain_community.chat_models import ChatOpenAI
 from langchain_core.output_parsers import JsonOutputParser
 from langchain_core.messages import HumanMessage
-from app.models import UserPreferences, Property
+from app.models import UserPreferences, PropertyAnalysisResponse
 from app.config import settings
 
-class PropertyScore(BaseModel):
+class PropertyRecommendation(BaseModel):
+    property_id: str
     score: float = Field(ge=0, le=1)
-    reasoning: Dict[str, str]
-    recommended: bool
     highlights: List[str]
     concerns: List[str]
 
-class RecommendationAnalysis(BaseModel):
-    property_id: str
-    match_score: PropertyScore
-    personalization_notes: str
-    feature_alignment: Dict[str, bool]
-    price_analysis: str
+class BatchRecommendationResult(BaseModel):
+    recommendations: List[PropertyRecommendation]
+    explanation: str
+    preference_analysis: Dict[str, str]
 
 class PropertyRecommender:
     def __init__(self):
@@ -27,82 +24,75 @@ class PropertyRecommender:
             base_url=settings.BASE_URL,
             model="gemini-2.0-flash",
         )
-        self.parser = JsonOutputParser(pydantic_object=RecommendationAnalysis)
+        self.parser = JsonOutputParser(pydantic_object=BatchRecommendationResult)
 
     async def get_recommendations(
         self,
-        properties: List[Property],
+        properties: List[PropertyAnalysisResponse],
         preferences: UserPreferences,
         limit: int = 10
-    ) -> List[Property]:
-        scored_properties = []
-        
-        for property in properties:
-            analysis = await self._analyze_property_match(property, preferences)
-            if analysis.match_score.recommended:
-                scored_properties.append((property, analysis.match_score.score))
-        
-        # Sort by score and return top recommendations
-        scored_properties.sort(key=lambda x: x[1], reverse=True)
-        return [prop for prop, _ in scored_properties[:limit]]
-
-    async def _analyze_property_match(
-        self,
-        property: Property,
-        preferences: UserPreferences
-    ) -> RecommendationAnalysis:
+    ) -> List[PropertyAnalysisResponse]:
         try:
-            # Prepare the prompt
-            prompt = f"""Analyze how well this property matches the user's preferences.
-            
-            Property Details:
-            - Price: ${property.price:,}
-            - Location: {property.city}, {property.state}
-            - Bedrooms: {property.bedrooms}
-            - Bathrooms: {property.bathrooms}
-            - Square Footage: {property.square_footage}
-            - Type: {property.property_type}
-            - Description: {property.description}
-            
-            User Preferences:
-            - Max Price: ${preferences.max_price:,}
-            - Min Bedrooms: {preferences.min_bedrooms}
-            - Location: {preferences.location}
-            - Property Type: {preferences.property_type or 'Any'}
-            - Must-Have Features: {', '.join(preferences.must_have_features) if preferences.must_have_features else 'None specified'}
-            
-            Provide a detailed analysis of the match between the property and preferences.
-            Consider price alignment, location desirability, feature match, and overall suitability.
-            """
+            # Prepare the batch analysis prompt
+            properties_summary = []
+            for idx, prop in enumerate(properties):
+                p = prop.properties_search
+                summary = (
+                    f"Property {idx + 1}:\n"
+                    f"ID: {p.listing_id}\n"
+                    f"Price: {p.price}\n"
+                    f"Address: {p.address}\n"
+                    f"Bedrooms: {p.bedrooms}\n"
+                    f"Bathrooms: {p.bathrooms}\n"
+                    f"Type: {p.property_type}\n"
+                    f"Image Analysis: {prop.image_analysis.summary if prop.image_analysis else 'No analysis'}\n"
+                )
+                properties_summary.append(summary)
 
-            # Get format instructions
-            format_instructions = self.parser.get_format_instructions()
-            
+            prompt = (
+                "Analyze these properties against the user's preferences and provide recommendations.\n\n"
+                "Properties:\n"
+                f"{chr(10).join(properties_summary)}\n\n"
+                "User Preferences:\n"
+                f"{preferences}\n\n"
+                "Provide:\n"
+                "1. A score (0-1) for each property based on preference match\n"
+                "2. Key highlights for each recommended property\n"
+                "3. Any concerns or mismatches\n"
+                "4. Overall explanation of recommendations\n"
+                "5. Analysis of how preferences were applied\n\n"
+                f"Return the top {limit} most suitable properties."
+            )
+
             messages = [
                 HumanMessage(
-                    content=f"{prompt}\n\n{format_instructions}"
+                    content=f"{prompt}\n\n{self.parser.get_format_instructions()}"
                 )
             ]
             
-            # Generate analysis using LLM
+            # Get batch analysis from LLM
             response = self.client.invoke(messages)
-            
-            # Parse the response
             analysis = self.parser.parse(response.content)
-            return analysis
+            
+            # Sort properties by score and get top recommendations
+            property_scores = {
+                rec.property_id: rec.score 
+                for rec in analysis.recommendations
+            }
+            
+            # Filter and sort properties based on scores
+            recommended_properties = [
+                prop for prop in properties 
+                if prop.properties_search.listing_id in property_scores
+            ]
+            recommended_properties.sort(
+                key=lambda x: property_scores[x.properties_search.listing_id],
+                reverse=True
+            )
+            
+            return recommended_properties[:limit]
             
         except Exception as e:
-            # Return a low-score analysis if something goes wrong
-            return RecommendationAnalysis(
-                property_id=property.id,
-                match_score=PropertyScore(
-                    score=0.0,
-                    reasoning={"error": str(e)},
-                    recommended=False,
-                    highlights=[],
-                    concerns=["Error in analysis"]
-                ),
-                personalization_notes="Analysis failed",
-                feature_alignment={},
-                price_analysis="Unable to analyze"
-            ) 
+            print(f"Error in batch recommendation: {str(e)}")
+            # Return original properties if analysis fails
+            return properties[:limit] 

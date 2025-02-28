@@ -2,23 +2,27 @@ import streamlit as st
 import requests
 import json
 from typing import Dict, List
-import pandas as pd
-import plotly.express as px
 
 BACKEND_URL = "http://localhost:8000"
+v1_prefix = "/api/v1"
 
 def init_session_state():
     if 'messages' not in st.session_state:
         st.session_state.messages = []
-    if 'preferences' not in st.session_state:
-        st.session_state.preferences = {
-            'location': '',
-            'min_price': None,
-            'max_price': None,
-            'min_beds': None,
-            'property_type': None,
-            'must_have_features': []
+    if 'search_params' not in st.session_state:
+        st.session_state.search_params = {
+            "location": None,
+            "suburb": None, 
+            "state": None,
+            "postcode": None,
+            "min_price": None,
+            "max_price": None,
+            "min_bedrooms": None,
+            "property_type": None
         }
+    if 'preferences' not in st.session_state:
+        st.session_state.preferences = {}
+
 
 def display_property_in_chat(property: Dict):
     with st.chat_message("assistant"):
@@ -48,7 +52,7 @@ def show_sidebar():
         # Location filter
         location = st.text_input(
             "Location", 
-            value=st.session_state.preferences['location'],
+            value=st.session_state.search_params.get('location', ''),
             placeholder="Enter city or area"
         )
         
@@ -60,41 +64,41 @@ def show_sidebar():
                 "Min Price",
                 min_value=0,
                 step=50000,
-                value=st.session_state.preferences['min_price'] or 0
+                value=st.session_state.search_params.get('min_price', 0)
             )
         with col2:
             max_price = st.number_input(
                 "Max Price",
                 min_value=0,
                 step=50000,
-                value=st.session_state.preferences['max_price'] or 0
+                value=st.session_state.search_params.get('max_price', 0)
             )
         
         # Bedrooms
         min_beds = st.number_input(
             "Minimum Bedrooms",
             min_value=0,
-            value=st.session_state.preferences['min_beds'] or 0
+            value=st.session_state.search_params.get('min_beds', 0)
         )
         
         # Property Type
         property_type = st.multiselect(
             "Property Type",
             options=['Any', 'house', 'apartment', 'condo', 'townhouse'],
-            default=st.session_state.preferences['property_type']
+            default=st.session_state.search_params.get('property_type', [])
         )
         
         # Features
         features = st.multiselect(
             "Must-Have Features",
             options=['Garage', 'Garden', 'Pool', 'Balcony', 'Parking'],
-            default=st.session_state.preferences['must_have_features']
+            default=st.session_state.search_params.get('must_have_features', [])
         )
         
         # Apply filters button
         if st.button("Apply Filters"):
             # Update preferences
-            st.session_state.preferences.update({
+            st.session_state.search_params.update({
                 'location': location,
                 'min_price': min_price if min_price > 0 else None,
                 'max_price': max_price if max_price > 0 else None,
@@ -109,10 +113,11 @@ def process_chat_message(message: str):
     try:
         # Send both message and current preferences to backend
         response = requests.post(
-            f"{BACKEND_URL}/chat",
+            f"{BACKEND_URL}/{v1_prefix}/chat",
             json={
                 "user_input": message,
-                "preferences": st.session_state.preferences
+                "preferences": st.session_state.preferences,
+                "search_params": st.session_state.search_params
             }
         )
         
@@ -121,6 +126,9 @@ def process_chat_message(message: str):
             # Update preferences with any new information
             if chat_response["preferences"]:
                 st.session_state.preferences.update(chat_response["preferences"])
+            if chat_response["search_params"]:
+                st.session_state.search_params.update(chat_response["search_params"])
+
             return chat_response["response"]
         else:
             return "Sorry, I'm having trouble understanding. Could you rephrase that?"
