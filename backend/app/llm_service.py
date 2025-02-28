@@ -112,7 +112,6 @@ def PreferenceGraph():
             conversation = "\nConversation:\n"
             for msg in chat_history:
                 conversation += f"{msg['role'].title()}: {msg['content']}\n"
-            conversation += f"User: {messages[-1].content}\n"
             
             # Get LLM response
             response = llm.invoke([
@@ -145,7 +144,6 @@ def PreferenceGraph():
             # Update state with merged values
             state["userpreferences"] = merged_preferences
             state["propertysearchrequest"] = merged_search_params
-            print("State:", state)
         except Exception as e:
             print(f"Error in extract_worker: {e}")
         
@@ -179,29 +177,138 @@ def PreferenceGraph():
         """Generate follow-up question for missing information"""
         current_field = state["current_field"]
         search_params = state["propertysearchrequest"]
+        chat_history = state.get("chat_history", [])
         
-        # Question templates based on UserPreferences fields
-        questions = {
-            "location": "What city or area are you interested in?",
-            "max_price": "What's your maximum budget for the property?",
-            "min_beds": "How many bedrooms do you need?",
-            "property_type": "What type of property are you looking for?",
-            "must_have_features": "Any specific features you're looking for?"
-        }
+        # Build conversation context
+        conversation = "\nPrevious conversation:\n"
+        for msg in chat_history:
+            conversation += f"{msg['role'].title()}: {msg['content']}\n"
         
         # Generate natural follow-up question
         response = llm.invoke([
-            SystemMessage(content="""You are a helpful real estate assistant.
-            Ask for the missing information naturally and conversationally.
-            Keep the question focused and clear."""),
-            HumanMessage(content=f"""
-            The user's current preferences: {search_params}
-            Ask about: {questions[current_field]}
-            """)
+            SystemMessage(content="""You are a knowledgeable and empathetic Australian real estate agent with years of experience.
+            Your goal is to help users find their ideal property by gathering information and providing expert guidance.
+            
+            Guidelines:
+            - Be conversational and empathetic
+            - Ask one clear question at a time
+            - If the user seems undecided after 2-3 exchanges about the same topic:
+                * Provide market insights or suggestions based on their context
+                * Share relevant examples or alternatives
+                * Explain trade-offs between different options
+                * Make professional recommendations based on their needs
+            
+            Examples of helpful suggestions:
+            - For location: "Given your budget and preference for good schools, I'd suggest considering suburbs like X or Y. They offer great value and top-rated schools."
+            - For price: "In the current market, properties in this area typically range from $X to $Y. Based on your requirements, I'd recommend a budget of around $Z."
+            - For property type: "Since you're looking for low maintenance and good investment potential, a modern apartment in X area could be ideal."
+            
+            Current missing field: {current_field}
+            Current search parameters: {search_params}
+            
+            Generate either:
+            1. A natural follow-up question to get missing information, or
+            2. If the user seems undecided, provide expert guidance with specific suggestions."""),
+            HumanMessage(content=f"""Based on the conversation:
+            {conversation}
+            
+            We need to know about: {current_field}
+            Current search parameters: {search_params}
+            
+            The user has had {len(chat_history)} exchanges. If they seem undecided, provide expert guidance.
+            Otherwise, ask a natural follow-up question to get the missing information.""")
         ])
         
         # Add question to messages
         state["messages"].append(AIMessage(content=response.content))
+        return state
+
+    # Worker: Infer preferences from context
+    def inference_worker(state: State) -> State:
+        """Infer additional preferences and search parameters from conversation context"""
+        current_preferences = state["userpreferences"]
+        current_search_params = state["propertysearchrequest"]
+        chat_history = state.get("chat_history", [])
+        
+        if not chat_history:
+            return state
+            
+        try:
+            inference_prompt = """You are an expert real estate consultant with deep knowledge of Australian property market trends.
+            Analyze the conversation to make reasonable inferences about user preferences and search parameters.
+            
+            Rules for making inferences:
+            1. Only make logical inferences based on clear contextual clues
+            2. Assign lower confidence weights (0.1-0.3) to inferred preferences
+            3. Don't override any explicitly stated preferences
+            4. Consider lifestyle implications of stated preferences
+            
+            Examples of valid inferences:
+            - If user mentions "family", infer interest in multiple bedrooms
+            - If user mentions "commute to CBD", infer transport requirements
+            - If user mentions "quiet", infer preference for residential areas
+            - If price range is high, infer quality expectations
+            
+            Return only reasonably confident inferences in the format:
+            {
+                "user_preferences": {
+                    "Location": ["inferred-location", weight],
+                    "Price": ["inferred-price-range", weight],
+                    ... (other preference categories)
+                },
+                "search_parameters": {
+                    "location": "inferred-location" or null,
+                    "min_price": number or null,
+                    "max_price": number or null,
+                    "min_bedrooms": number or null,
+                    "property_type": "inferred-type" or null
+                }
+            }
+            """
+            
+            # Build conversation context
+            conversation = "\nConversation context:\n"
+            for msg in chat_history:
+                conversation += f"{msg['role'].title()}: {msg['content']}\n"
+            
+            # Get inferences from LLM
+            response = llm.invoke([
+                SystemMessage(content=inference_prompt),
+                HumanMessage(content=f"""Based on this conversation:
+                {conversation}
+                
+                Current preferences: {current_preferences}
+                Current search parameters: {current_search_params}
+                
+                What reasonable inferences can you make about their preferences and requirements?""")
+            ])
+            
+            # Parse inferred preferences
+            parser = JsonOutputParser(pydantic_object=UserPreferencesSearch)
+            inferred = parser.invoke(response)
+            
+            # Merge inferences with existing preferences (only if not already set)
+            merged_preferences = {**current_preferences}
+            for key, value in inferred["user_preferences"].items():
+                if key not in merged_preferences or merged_preferences[key][0] is None:
+                    merged_preferences[key] = value
+            
+            # Merge inferred search parameters (only if not already set)
+            merged_search_params = {**current_search_params}
+            for key, value in inferred["search_parameters"].items():
+                if key not in merged_search_params or merged_search_params[key] is None:
+                    merged_search_params[key] = value
+            
+            # Update state with merged values
+            state["userpreferences"] = merged_preferences
+            state["propertysearchrequest"] = merged_search_params
+            
+            print("Inferred preferences:", inferred["user_preferences"])
+            print("Inferred search params:", inferred["search_parameters"])
+            
+        except Exception as e:
+            print(f"Error in inference_worker: {e}")
+        
         return state
 
     # Create the graph
@@ -209,12 +316,14 @@ def PreferenceGraph():
     
     # Add nodes
     workflow.add_node("extract", extract_worker)
+    workflow.add_node("infer", inference_worker)  # Add the new worker
     workflow.add_node("check", check_worker)
     workflow.add_node("question", question_worker)
     
-    # Add edges
+    # Update edges
     workflow.add_edge(START, "extract")
-    workflow.add_edge("extract", "check")
+    workflow.add_edge("extract", "infer")    # Add edge to inference worker
+    workflow.add_edge("infer", "check")      # Connect inference to check
     workflow.add_conditional_edges(
         "check",
         lambda x: END if x["is_complete"] else "question"
@@ -249,44 +358,9 @@ class LLMService:
         final_state = self.graph.invoke(state)
         print("Final state:", final_state)
         
-        # Get last response and updated preferences
-        last_message = final_state["messages"][-1].content if final_state["messages"] else ""
-        updated_preferences = final_state["userpreferences"]
-        updated_search_params = final_state["propertysearchrequest"]
         # If we have complete preferences, search for properties
-        # if final_state["is_complete"]:
-        #     try:    
-        #         # Search for properties using scraper
-        #         properties = await self.property_scraper.search_properties(
-        #             location=updated_preferences.get("location"),
-        #             min_price=updated_preferences.get("min_price"),
-        #             max_price=updated_preferences.get("max_price"),
-        #             min_beds=updated_preferences.get("min_bedrooms"),
-        #             property_type=updated_preferences.get("property_type"),
-        #             max_results=5  # Limit results
-        #         )
-        #         print(properties)
-        #         # Format property results into response
-        #         if properties:
-        #             property_summary = "\n\nHere are some properties that match your criteria:\n"
-        #             for i, prop in enumerate(properties, 1):
-        #                 property_summary += f"\n{i}. {prop['address']}"
-        #                 if prop['price']:
-        #                     property_summary += f"\nPrice: {prop['price']}"
-        #                 property_summary += f"\nBedrooms: {prop['bedrooms']}"
-        #                 if prop['property_type']:
-        #                     property_summary += f"\nType: {prop['property_type']}"
-        #                 property_summary += "\n"
-                    
-        #             last_message += property_summary
-        #         else:
-        #             last_message += "\n\nI couldn't find any properties matching your criteria at the moment."
-                
-        #     except Exception as e:
-                # print(f"Error searching properties: {e}")
-                # last_message += "\n\nI encountered an error while searching for properties."
+        if not final_state["is_complete"]:
+            last_message = final_state["messages"][-1].content if final_state["messages"] else ""
+            self.chat_history.append({"role": "assistant", "content": last_message})
         
-        # Add assistant response to chat history
-        self.chat_history.append({"role": "assistant", "content": last_message})
-        
-        return last_message, updated_preferences, updated_search_params
+        return final_state

@@ -109,8 +109,7 @@ class PropertyScraper:
                              if listing.find_all('img', {'class': 'image-gallery-image'})
                              else ['No image available']),
                 
-                # Agent name
-                            # Agent name
+                # Agent name 
                 'agent_name': (listing.find('div', {'data-testid': 'agency-image'}).find('img').get('alt')
                                 if listing.find('div', {'data-testid': 'agency-image'})
                                 else 'No Agent name')
@@ -127,7 +126,7 @@ class PropertyScraper:
         max_price: Optional[float] = None,
         min_beds: Optional[int] = None,
         property_type: Optional[str] = None,
-        max_results: int = 10
+        max_results: int = 20
     ) -> List[Dict]:
         """
         Search properties with given criteria
