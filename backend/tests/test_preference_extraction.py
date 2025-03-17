@@ -349,6 +349,322 @@ class TestPreferenceExtraction:
         print(f"Completed in {turns} turns")
         print(f"Extracted search parameters: {json.dumps(search_params, indent=2)}")
         print(f"Extracted preferences: {json.dumps(final_state['userpreferences'], indent=2)}")
+        
+    @pytest.mark.asyncio
+    async def test_ambiguity_detection(self, llm_service):
+        """Test the detection and resolution of ambiguities in user preferences"""
+        
+        print("\n\n===== 开始测试：矛盾检测能力 =====")
+        
+        user_persona = """
+        You are Jordan, a 38-year-old tech executive with highly contradictory preferences.
+        Your communication style:
+        - You speak confidently but your requirements have significant internal contradictions
+        - You don't realize your requirements conflict with each other
+        - You become indecisive when the contradictions are pointed out
+        
+        Your contradictory preferences:
+        - Want a "waterfront property" but your budget is only $600K (unrealistic in most Australian cities)
+        - Want a "quiet countryside feel" but also "walking distance to CBD offices"
+        - Want a "newly built modern home" but also "character-filled historic property"
+        - Need "minimum 4 bedrooms" but want a "low-maintenance small property"
+        - Want to be in an "exclusive prestigious suburb" but your budget is too low for such areas
+        
+        When contradictions are pointed out, you'll reluctantly prioritize:
+        - Location over size (happy with smaller place in better location)
+        - Modern over historic (functionality over character)
+        - Closer to city over waterfront views
+        """
+        
+        initial_query = "I'm looking for a waterfront property that's quiet and peaceful but within walking distance to CBD. My budget is around $600K and I need at least 4 bedrooms. I prefer both modern and historic features, with minimal maintenance."
+        
+        # Process the initial query
+        state = await llm_service.process_user_input(initial_query)
+        
+        # Check if ambiguities were detected
+        assert state.get("has_ambiguities", False), "Failed to detect obvious contradictions"
+        assert len(state.get("ambiguities", [])) > 0, "No ambiguities were identified"
+        
+        # Verify that at least one contradiction is of high importance
+        ambiguities = state.get("ambiguities", [])
+        high_importance_ambiguities = [a for a in ambiguities if a.get("importance") == "high"]
+        assert len(high_importance_ambiguities) > 0, "Failed to mark any contradiction as high importance"
+        
+        # Check that the detected ambiguities make sense
+        ambiguity_fields = [a.get("field") for a in ambiguities]
+        expected_fields = ["location", "price", "size", "property_type"]
+        assert any(field in ambiguity_fields for field in expected_fields), "Failed to detect contradictions in expected fields"
+        
+        # Verify that clarification questions are generated for ambiguities
+        assert all("question" in a or "clarification_question" in a for a in ambiguities), "Missing clarification questions for ambiguities"
+        
+        print("\n=== Ambiguity Detection Test Results ===")
+        print(f"Number of ambiguities detected: {len(ambiguities)}")
+        print(f"High importance ambiguities: {len(high_importance_ambiguities)}")
+        print(f"Detected ambiguities: {json.dumps(ambiguities, indent=2)}")
+        
+        # Simulate answering one clarification
+        if ambiguities and len(llm_service.chat_history) >= 2:
+            clarification_question = llm_service.chat_history[-1]["content"]
+            print(f"\nClarification question: {clarification_question}")
+            
+            # Generate user response to clarification
+            user_response = mock_user_llm.invoke([
+                SystemMessage(content=f"""You are simulating a person with the following persona:
+                {user_persona}
+                
+                Respond to the real estate agent's question about contradictions in your requirements.
+                Acknowledge the contradiction and reluctantly prioritize based on your persona."""),
+                HumanMessage(content=f"Real estate agent: {clarification_question}")
+            ])
+            
+            print(f"User response: {user_response.content}")
+            
+            # Process the clarification response
+            final_state = await llm_service.process_user_input(user_response.content)
+            
+            # Check if ambiguities were resolved
+            remaining_ambiguities = final_state.get("ambiguities", [])
+            print(f"Remaining ambiguities after clarification: {len(remaining_ambiguities)}")
+            
+            # The number of ambiguities should decrease or their importance should change
+            assert len(remaining_ambiguities) <= len(ambiguities), "Clarification didn't reduce ambiguities"
+            
+    @pytest.mark.asyncio
+    async def test_simple_location_ambiguity(self, llm_service):
+        """Test detection of vague location preferences"""
+        
+        print("\n\n===== 开始测试：位置模糊检测 =====")
+        
+        # 简单的初始查询，只提到城市而不是具体区域
+        initial_query = "I'm looking for a house in Sydney. My budget is around $1.5 million."
+        
+        # 处理初始查询
+        state = await llm_service.process_user_input(initial_query)
+        
+        # 检查是否检测到模糊性
+        ambiguities = state.get("ambiguities", [])
+        print(f"\n检测到的模糊性: {json.dumps(ambiguities, indent=2)}")
+        
+        # 检查是否有位置模糊性
+        location_ambiguities = [a for a in ambiguities if a.get("field") == "location"]
+        assert len(location_ambiguities) > 0, "未检测到位置模糊性"
+        
+        print("\n当前搜索参数:")
+        print(json.dumps(state.get("propertysearchrequest", {}), indent=2))
+        
+        # 获取澄清问题或后续询问
+        if len(llm_service.chat_history) >= 2:
+            clarification_question = llm_service.chat_history[-1]["content"]
+            print(f"\n澄清问题: {clarification_question}")
+            
+            # 模拟用户对澄清问题的回答
+            user_response = "I'm interested in the Eastern Suburbs, maybe Bondi or Randwick."
+            print(f"\n用户回答: {user_response}")
+            
+            # 处理澄清回答
+            final_state = await llm_service.process_user_input(user_response)
+            
+            # 检查模糊性是否解决
+            remaining_ambiguities = final_state.get("ambiguities", [])
+            print(f"\n澄清后剩余模糊性: {len(remaining_ambiguities)}")
+            
+            # 检查提取的信息
+            search_params = final_state["propertysearchrequest"]
+            preferences = final_state["userpreferences"]
+            
+            print("\n最终搜索参数:")
+            print(json.dumps(search_params, indent=2))
+            print("\n最终用户偏好:")
+            print(json.dumps(preferences, indent=2))
+            
+            # 检查位置信息是否更新 - 可能在位置字段或用户偏好中
+            location_updated = False
+            
+            # 检查搜索参数中的位置
+            location_str = str(search_params.get("location", "")).lower()
+            if any(suburb in location_str for suburb in ["eastern", "bondi", "randwick"]):
+                location_updated = True
+            
+            # 检查用户偏好中的位置
+            if "Location" in preferences:
+                location_pref = str(preferences["Location"][0]).lower()
+                if any(suburb in location_pref for suburb in ["eastern", "bondi", "randwick"]):
+                    location_updated = True
+            
+            assert location_updated, "澄清后未正确更新位置信息"
+
+    @pytest.mark.asyncio
+    async def test_simple_price_ambiguity(self, llm_service):
+        """Test detection of vague price preferences"""
+        
+        print("\n\n===== 开始测试：价格模糊检测 =====")
+        
+        # 使用模糊的价格表述
+        initial_query = "I need an affordable apartment in Melbourne that's modern and close to public transport."
+        
+        # 处理初始查询
+        state = await llm_service.process_user_input(initial_query)
+        
+        # 检查是否检测到模糊性
+        ambiguities = state.get("ambiguities", [])
+        print(f"\n检测到的模糊性: {json.dumps(ambiguities, indent=2)}")
+        
+        # 获取澄清问题或后续询问
+        if len(llm_service.chat_history) >= 2:
+            agent_question = llm_service.chat_history[-1]["content"]
+            print(f"\n房产顾问问题: {agent_question}")
+            
+            # 模拟用户具体的价格回答
+            user_response = "My budget is around $500K to $650K maximum."
+            print(f"\n用户回答: {user_response}")
+            
+            # 处理价格回答
+            final_state = await llm_service.process_user_input(user_response)
+            
+            # 检查提取的价格信息是否正确
+            search_params = final_state["propertysearchrequest"]
+            print(f"\n提取的搜索参数: {json.dumps(search_params, indent=2)}")
+            
+            assert search_params.get("min_price") is not None, "未提取最低价格"
+            assert search_params.get("max_price") is not None, "未提取最高价格"
+            assert 450000 <= search_params.get("min_price", 0) <= 550000, "最低价格提取不准确"
+            assert 600000 <= search_params.get("max_price", 0) <= 700000, "最高价格提取不准确"
+
+    @pytest.mark.asyncio
+    async def test_simple_contradictory_preferences(self, llm_service):
+        """Test detection of simple contradictory preferences"""
+        
+        print("\n\n===== 开始测试：简单矛盾偏好检测 =====")
+        
+        # 包含明显矛盾的初始查询
+        initial_query = "I want a large house with at least 5 bedrooms, but it must be low-maintenance. I prefer a quiet neighborhood but it needs to be in the heart of the city. My budget is $800K."
+        
+        # 处理初始查询
+        state = await llm_service.process_user_input(initial_query)
+        
+        # 检查是否检测到矛盾
+        assert state.get("has_ambiguities", False), "未检测到明显的矛盾"
+        ambiguities = state.get("ambiguities", [])
+        assert len(ambiguities) > 0, "未识别任何矛盾"
+        
+        print(f"\n检测到的矛盾: {json.dumps(ambiguities, indent=2)}")
+        
+        # 获取澄清问题
+        if ambiguities and len(llm_service.chat_history) >= 2:
+            clarification_question = llm_service.chat_history[-1]["content"]
+            print(f"\n澄清问题: {clarification_question}")
+            
+            # 模拟用户对矛盾的回答
+            user_response = "I guess location is more important to me than size. I could settle for a smaller place if it's in a central location. And maybe I could hire someone for maintenance if needed."
+            print(f"\n用户回答: {user_response}")
+            
+            # 处理澄清回答
+            final_state = await llm_service.process_user_input(user_response)
+            
+            # 检查偏好是否被正确更新
+            preferences = final_state["userpreferences"]
+            print(f"\n更新后的偏好: {json.dumps(preferences, indent=2)}")
+            
+            # 检查是否正确解决了矛盾（矛盾减少或消失）
+            remaining_ambiguities = final_state.get("ambiguities", [])
+            print(f"\n澄清后剩余矛盾: {len(remaining_ambiguities)}")
+            assert len(remaining_ambiguities) < len(ambiguities), "澄清后矛盾未减少"
+
+    @pytest.mark.asyncio
+    async def test_comprehensive_ambiguity_detection(self, llm_service):
+        """全面测试ambiguity_worker的检测能力，包含多种模糊和矛盾场景"""
+        
+        print("\n\n===== 开始测试：全面模糊与矛盾检测 =====")
+        
+        # 创建一系列包含不同类型模糊/矛盾的用户查询
+        test_cases = [
+            {
+                "name": "位置模糊",
+                "query": "I need a property in Sydney.",
+                "expected_type": "vagueness",
+                "expected_field": "location"
+            },
+            {
+                "name": "价格模糊",
+                "query": "I want an affordable apartment in Melbourne.",
+                "expected_type": "vagueness",
+                "expected_field": "price"
+            },
+            {
+                "name": "位置矛盾",
+                "query": "I want a quiet countryside property but within walking distance to the CBD.",
+                "expected_type": "contradiction",
+                "expected_field": "location"
+            },
+            {
+                "name": "预算与期望矛盾",
+                "query": "I'm looking for a luxury penthouse with high-end finishes. My budget is $500K.",
+                "expected_type": "unrealistic",
+                "expected_field": "price"
+            },
+            {
+                "name": "规模与维护矛盾",
+                "query": "I want a large house with 5+ bedrooms but it must be very low maintenance.",
+                "expected_type": "contradiction",
+                "expected_field": "size"
+            }
+        ]
+        
+        results = []
+        
+        # 执行每个测试用例
+        for test_case in test_cases:
+            print(f"\n\n测试: {test_case['name']}")
+            print(f"用户查询: {test_case['query']}")
+            
+            # 清除之前的对话历史
+            llm_service.chat_history = []
+            
+            # 处理查询
+            state = await llm_service.process_user_input(test_case['query'])
+            
+            # 检查ambiguities
+            ambiguities = state.get("ambiguities", [])
+            print(f"检测到的模糊/矛盾: {json.dumps(ambiguities, indent=2)}")
+            
+            # 验证结果
+            test_result = {
+                "name": test_case["name"],
+                "query": test_case["query"],
+                "expected_type": test_case["expected_type"],
+                "expected_field": test_case["expected_field"],
+                "detected": False,
+                "ambiguities": ambiguities
+            }
+            
+            # 检查是否找到了预期的模糊/矛盾类型
+            for ambiguity in ambiguities:
+                if (ambiguity.get("type") == test_case["expected_type"] and 
+                    ambiguity.get("field") == test_case["expected_field"]):
+                    test_result["detected"] = True
+                    test_result["clarification_question"] = ambiguity.get("clarification_question", "")
+                    break
+            
+            results.append(test_result)
+            
+            if test_result["detected"]:
+                print(f"✅ 成功检测到 {test_case['expected_type']} 类型的 {test_case['expected_field']} 模糊/矛盾")
+                # 显示澄清问题
+                if "clarification_question" in test_result:
+                    print(f"澄清问题: {test_result['clarification_question']}")
+            else:
+                print(f"❌ 未能检测到 {test_case['expected_type']} 类型的 {test_case['expected_field']} 模糊/矛盾")
+        
+        # 总结结果
+        success_count = sum(1 for r in results if r["detected"])
+        print(f"\n\n测试结果总结: {success_count}/{len(test_cases)} 通过")
+        for test_result in results:
+            status = "✅ 通过" if test_result["detected"] else "❌ 失败"
+            print(f"{status} {test_result['name']}")
+        
+        # 验证至少80%的测试通过
+        assert success_count / len(test_cases) >= 0.8, f"模糊/矛盾检测成功率低于期望: {success_count}/{len(test_cases)}"
 
 if __name__ == "__main__":
     import sys
