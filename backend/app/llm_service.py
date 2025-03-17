@@ -19,15 +19,12 @@ class State(TypedDict):
     messages: MessagesState
     userpreferences: Dict
     propertysearchrequest: Dict
-    current_field: str
-    completed_fields: List[str]
+    current_missing_field: str
     is_complete: bool
     chat_history: List[Dict]  # Add chat history to state
+    has_ambiguities: Optional[bool]
+    ambiguities: Optional[List[Dict]]
 
-# Worker state
-class WorkerState(TypedDict):
-    field: str  # Changed from section to field
-    completed_fields: Annotated[list, operator.add]
 
 class UserPreferencesSearch(BaseModel):
     user_preferences: UserPreferences
@@ -58,8 +55,15 @@ def PreferenceGraph():
             
         try:
             # Extract both user preferences and search parameters
-            extraction_prompt = """You are an expert Australian real estate consultant and demographic analyst.
-            Analyze the conversation to extract two types of information:
+            extraction_prompt = """You are an expert Australian real estate consultant and demographic analyst. 
+            You are specializing in clarifying client requirements.
+            Analyze the conversation to extract two types of information and make reasonable inferences about user preferences and search parameters.
+            
+            Rules for making inferences:
+            1. Only make logical inferences based on clear contextual clues
+            2. Assign lower confidence weights (0.1-0.3) to inferred preferences
+            3. Don't override any explicitly stated preferences
+            4. Consider lifestyle implications of stated preferences
 
             1. Detailed user preferences with importance weights (0.0-1.0):
             {
@@ -119,63 +123,65 @@ def PreferenceGraph():
                 HumanMessage(content=conversation)
             ])
             
-            print("Conversation context:", conversation)
-            print("LLM response:", response.content.strip())
+            # print("Conversation context:", conversation)
+            # print("LLM response:", response.content.strip())
             
             # Parse extracted preferences
             output = parser.invoke(response)
             # Extract the relevant portions and parse them
             new_search_params = output["search_parameters"]
             new_user_prefs = output["user_preferences"]
-            print("Parsed search_params:", new_search_params)
-            print("Parsed user_prefs:", new_user_prefs)
-            
+
             # Update preferences, keeping existing values if not in new extraction
             merged_preferences = {**current_preferences}
             for key, value in new_user_prefs.items():
                     merged_preferences[key] = value
-            print("Merged preferences:", merged_preferences)
+            # print("Merged preferences:", merged_preferences)
                         
             merged_search_params = {**current_search_params}
             for key, value in new_search_params.items():
                     merged_search_params[key] = value
                     
-            print("Merged merged_search_params:", merged_search_params)
+            # print("Merged search params:", merged_search_params)
             # Update state with merged values
             state["userpreferences"] = merged_preferences
             state["propertysearchrequest"] = merged_search_params
         except Exception as e:
             print(f"Error in extract_worker: {e}")
         
+        
         return state
 
     # Worker: Check if all required fields are present
     def check_worker(state: State) -> State:
         """Check if all required preferences are present"""
-        search_params = state["propertysearchrequest"]
         required_fields = ["location", "max_price", "property_type"]
-        
+        required_preferences = ["style", "layout", "community"]
         # Check each required field
         missing = []
         for field in required_fields:
-            if search_params.get(field) is None:
+            if state["propertysearchrequest"].get(field) is None:
                 missing.append(field)
-        
+
+        for field in required_preferences:
+            if state["userpreferences"].get(field) is None:
+                missing.append(field)
+
         if missing:
             # Set the first missing field as current field
-            state["current_field"] = missing[0]
-            state["is_complete"] = False
-            print(f"Missing fields: {missing}")
+            state["current_missing_field"] = missing[0]
+            state["has_missing_fields"] = True
+            # print(f"Missing fields: {missing}")
         else:
             state["is_complete"] = True
-            print("All required fields collected:", search_params)
+            # print("All required fields collected")
             
         return state
 
     # Worker: Generate follow-up question
     def question_worker(state: State) -> State:
         """Generate follow-up question for missing information"""
-        current_field = state["current_field"]
+        current_missing_field = state["current_missing_field"]
         search_params = state["propertysearchrequest"]
         chat_history = state.get("chat_history", [])
         
@@ -203,7 +209,7 @@ def PreferenceGraph():
             - For price: "In the current market, properties in this area typically range from $X to $Y. Based on your requirements, I'd recommend a budget of around $Z."
             - For property type: "Since you're looking for low maintenance and good investment potential, a modern apartment in X area could be ideal."
             
-            Current missing field: {current_field}
+            Current missing field: {current_missing_field}
             Current search parameters: {search_params}
             
             Generate either:
@@ -212,7 +218,7 @@ def PreferenceGraph():
             HumanMessage(content=f"""Based on the conversation:
             {conversation}
             
-            We need to know about: {current_field}
+            We need to know about: {current_missing_field}
             Current search parameters: {search_params}
             
             The user has had {len(chat_history)} exchanges. If they seem undecided, provide expert guidance.
@@ -303,11 +309,100 @@ def PreferenceGraph():
             state["userpreferences"] = merged_preferences
             state["propertysearchrequest"] = merged_search_params
             
-            print("Inferred preferences:", inferred["user_preferences"])
-            print("Inferred search params:", inferred["search_parameters"])
+            # print("Inferred preferences:", inferred["user_preferences"])
+            # print("Inferred search params:", inferred["search_parameters"])
             
         except Exception as e:
             print(f"Error in inference_worker: {e}")
+        
+        return state
+
+    # Worker: Check for ambiguities in user preferences
+    def ambiguity_worker(state: State) -> State:
+        """Identify and resolve ambiguities in user preferences and search parameters"""
+        current_preferences = state["userpreferences"]
+        current_search_params = state["propertysearchrequest"]
+        chat_history = state.get("chat_history", [])
+        
+        if not chat_history:
+            return state
+            
+        try:
+            ambiguity_prompt = """As a Real Estate Advisor AI, your primary role is to identify and clarify ambiguities 
+            or contradictions in the client's stated preferences or requirements. 
+
+            Your goal is to avoid unnecessary probing into overly detailed specifics unless explicitly prompted by the 
+            client's responses. Aim to provide concise and relevant assistance, ensuring an efficient and comfortable interaction.
+
+            If no significant ambiguities are found, return {"ambiguities": [], "has_ambiguities": false}
+
+            Return only significant ambiguities (max 2) in JSON format:          
+                {
+                "ambiguities": [
+                    {
+                        "type": "contradiction|vagueness|unrealistic",
+                        "description": "Description of the ambiguity",
+                        "importance": "high|medium|low",
+                        "clarification_question": "Suggested question to resolve ambiguity"
+                    }
+                ],
+                "has_ambiguities": true|false
+            }
+            """
+            
+            # Build conversation context
+            conversation = "\nConversation context:\n"
+            for msg in chat_history:
+                conversation += f"{msg['role'].title()}: {msg['content']}\n"
+            
+            # Get ambiguity analysis from LLM
+            response = llm.invoke([
+                SystemMessage(content=ambiguity_prompt),
+                HumanMessage(content=f"""Based on this conversation:
+                {conversation}
+                
+                Identify any ambiguities or contradictions in the user's requirements:""")
+            ])
+            
+            # Parse ambiguity analysis
+            parser = JsonOutputParser()
+            analysis = parser.invoke(response)
+            
+            # Store ambiguity information in state
+            state["has_ambiguities"] = analysis.get("has_ambiguities", False)
+            state["ambiguities"] = analysis.get("ambiguities", [])
+            
+            # print(f"Ambiguity check result: has_ambiguities={state['has_ambiguities']}")
+            # if state["has_ambiguities"]:
+            #     print(f"Found ambiguities: {state['ambiguities']}")
+            
+        except Exception as e:
+            print(f"Error in ambiguity_worker: {e}")
+            state["has_ambiguities"] = False
+            state["ambiguities"] = []
+        
+        return state
+
+    # Worker: Generate ambiguity clarification question
+    def ambiguity_question_worker(state: State) -> State:
+        """Generate follow-up question to clarify ambiguities"""
+        ambiguities = state.get("ambiguities", [])
+        
+        if not ambiguities:
+            return state
+            
+        # Get the most important ambiguity
+        ambiguity = ambiguities[0]
+        clarification_question = ambiguity["clarification_question"]
+        
+        # Add clarification question to messages
+        state["messages"].append(AIMessage(content=clarification_question))
+        
+        # Add to chat history
+        if "chat_history" in state:
+            state["chat_history"].append({"role": "assistant", "content": clarification_question})
+        
+        # print(f"Asking for clarification: {clarification_question}")
         
         return state
 
@@ -316,14 +411,27 @@ def PreferenceGraph():
     
     # Add nodes
     workflow.add_node("extract", extract_worker)
-    workflow.add_node("infer", inference_worker)  # Add the new worker
+    # workflow.add_node("infer", inference_worker)
+    workflow.add_node("ambiguity", ambiguity_worker)
+    workflow.add_node("ambiguity_question", ambiguity_question_worker)  # Add new worker
     workflow.add_node("check", check_worker)
     workflow.add_node("question", question_worker)
     
     # Update edges
     workflow.add_edge(START, "extract")
-    workflow.add_edge("extract", "infer")    # Add edge to inference worker
-    workflow.add_edge("infer", "check")      # Connect inference to check
+    # workflow.add_edge("extract", "infer")
+    workflow.add_edge("extract", "ambiguity")
+    
+    # Add conditional edge from ambiguity worker
+    workflow.add_conditional_edges(
+        "ambiguity",
+        lambda x: "ambiguity_question" if x.get("has_ambiguities", False) else "check"
+    )
+    
+    # Connect ambiguity question to END
+    workflow.add_edge("ambiguity_question", END)
+    
+    # Connect check to either END or question
     workflow.add_conditional_edges(
         "check",
         lambda x: END if x["is_complete"] else "question"
@@ -348,15 +456,14 @@ class LLMService:
             messages=[HumanMessage(content=user_input)],
             userpreferences=preferences or UserPreferences(),
             propertysearchrequest=search_params or PropertySearchRequest(),
-            current_field=None,
-            completed_fields=[],
+            missing_field=None,
             is_complete=False,
             chat_history=self.chat_history
         )
         
         # Run the graph
         final_state = self.graph.invoke(state)
-        print("Final state:", final_state)
+        # print("Final state:", final_state)
         
         # If we have complete preferences, search for properties
         if not final_state["is_complete"]:

@@ -44,10 +44,61 @@ def display_property_in_chat(property: Dict):
                     st.write(f"**Description:** {property['description']}")
                     st.write(f"**Property Type:** {property['property_type'].title()}")
 
+def display_preferences():
+    """Display current user preferences in the sidebar"""
+    with st.sidebar:
+        st.subheader("📋 Your Preferences")
+        
+        # Display search parameters
+        if st.session_state.search_params:
+            with st.expander("Search Parameters", expanded=True):
+                for key, value in st.session_state.search_params.items():
+                    if value is not None and key != 'must_have_features':
+                        st.write(f"**{key.replace('_', ' ').title()}:** {value}")
+                
+                # Display features separately if they exist
+                if st.session_state.search_params.get('must_have_features'):
+                    st.write("**Must Have Features:**")
+                    for feature in st.session_state.search_params['must_have_features']:
+                        st.write(f"- {feature}")
+        
+        # Display detailed preferences with weights
+        if st.session_state.preferences:
+            with st.expander("Detailed Preferences", expanded=False):
+                for category, details in st.session_state.preferences.items():
+                    if isinstance(details, list) and len(details) >= 2:
+                        preference, weight = details[0], details[1]
+                        # Create a visual indicator of importance
+                        importance = "🔴" if weight > 0.7 else "🟠" if weight > 0.4 else "🟡"
+                        st.write(f"**{category}:** {preference} {importance}")
+                    elif details:
+                        st.write(f"**{category}:** {details}")
+        
+        # Add a button to clear preferences
+        if st.button("Clear All Preferences"):
+            st.session_state.preferences = {}
+            st.session_state.search_params = {
+                "location": None,
+                "suburb": None, 
+                "state": None,
+                "postcode": None,
+                "min_price": None,
+                "max_price": None,
+                "min_bedrooms": None,
+                "property_type": None
+            }
+            st.rerun()
+
 def show_sidebar():
     """Display and handle sidebar filters"""
     with st.sidebar:
         st.header("🔍 Property Filters")
+        
+        # Display current preferences first
+        display_preferences()
+        
+        st.markdown("---")
+        st.subheader("Adjust Filters")
         
         # Location filter
         location = st.text_input(
@@ -124,10 +175,14 @@ def process_chat_message(message: str):
         if response.status_code == 200:
             chat_response = response.json()
             # Update preferences with any new information
-            if chat_response["preferences"]:
+            if chat_response.get("preferences"):
                 st.session_state.preferences.update(chat_response["preferences"])
-            if chat_response["search_params"]:
+            if chat_response.get("search_params"):
                 st.session_state.search_params.update(chat_response["search_params"])
+                
+            # Add a visual indicator that preferences were updated
+            if (chat_response.get("preferences") or chat_response.get("search_params")):
+                st.sidebar.success("✅ Your preferences have been updated!")
 
             return chat_response["response"]
         else:
@@ -140,7 +195,7 @@ def main():
     st.set_page_config(page_title="Property Finder Chat", layout="wide")
     init_session_state()
     
-    # Show sidebar with filters
+    # Show sidebar with filters and preferences
     show_sidebar()
     
     # Main chat interface
@@ -175,9 +230,9 @@ def main():
         - Provide property recommendations
         
         Try saying something like:
-        - "I'm looking for a 3-bedroom house in San Francisco under $1.5M"
-        - "What properties are available in Seattle?"
-        - "Tell me about properties with a garden"
+        - "I'm looking for a 3-bedroom house in Sydney under $1.5M"
+        - "What properties are available in Melbourne?"
+        - "Tell me about properties with a garden in Brisbane"
         """)
 
 if __name__ == "__main__":

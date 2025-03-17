@@ -169,3 +169,9 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+
+# Firebase key
+Firebase_key.json
+
+# Cursor rules
+.cursorrules

@@ -3,7 +3,7 @@ from pydantic import BaseModel, Field
 from langchain_community.chat_models import ChatOpenAI
 from langchain_core.output_parsers import JsonOutputParser
 from langchain_core.messages import HumanMessage
-from app.models import UserPreferences, PropertyAnalysisResponse
+from app.models import UserPreferences, FirestoreProperty
 from app.config import settings
 
 class PropertyRecommendation(BaseModel):
@@ -28,10 +28,10 @@ class PropertyRecommender:
 
     async def get_recommendations(
         self,
-        properties: List[PropertyAnalysisResponse],
+        properties: List[FirestoreProperty],
         preferences: UserPreferences,
         limit: int = 10
-    ) -> List[PropertyAnalysisResponse]:
+    ) -> List[FirestoreProperty]:
         try:
             # Prepare the batch analysis prompt
             properties_summary = []

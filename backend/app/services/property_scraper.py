@@ -7,6 +7,7 @@ from typing import List, Dict, Optional
 from fake_useragent import UserAgent
 import logging
 import re
+from app.models import PropertySearchRequest, PropertySearchResponse
 
 logging.basicConfig(level=logging.INFO)
 
@@ -20,33 +21,31 @@ class PropertyScraper:
             'Connection': 'keep-alive',
         }
 
-    def _build_search_url(
-        self,
-        location: str,
-        min_beds: Optional[int] = None,
-        min_price: Optional[float] = None,
-        max_price: Optional[float] = None,
-        property_type: Optional[str] = None
-    ) -> str:
+    def _build_search_url(self, search_params: PropertySearchRequest) -> str:
         """Build the search URL with the given filters"""
         search_url = f"{self.base_url}/for-sale/"
         
         # Add bedrooms filter if specified
-        if min_beds:
-            search_url += f"{min_beds}-bedrooms/"
+        if search_params.get("min_bedrooms"):
+            search_url += f"{search_params['min_bedrooms']}-bedrooms/"
             
         # Add location filter
-        search_url += f"?loc={location.lower().replace(' ', '-')}"
-        
+        location = search_params.get("location", "")
+        if location:
+            search_url += f"?loc={location.lower().replace(' ', '-')}"
+        else:
+            search_url += "?"
+            
         # Add price range filters
-        if min_price:
-            search_url += f"&priceFrom={int(min_price)}"
-        if max_price:
-            search_url += f"&priceTo={int(max_price)}"
+        if search_params.get("min_price"):
+            search_url += f"&priceFrom={int(search_params['min_price'])}"
+        if search_params.get("max_price"):
+            search_url += f"&priceTo={int(search_params['max_price'])}"
             
         # Add property type filter
-        if property_type:
-            search_url += f"&propertyTypes={property_type.capitalize()}"
+        if search_params.get("property_type"):
+            search_url += f"&propertyTypes={search_params['property_type'].capitalize()}"
+            
         return search_url
         
     def _get_page(self, url: str) -> Optional[str]:
@@ -61,59 +60,66 @@ class PropertyScraper:
             logging.error(f"Error fetching {url}: {str(e)}")
             return None
 
-    def _parse_listing(self, listing) -> Optional[Dict]:
-        """Parse individual listing element"""
+    def _parse_listing(self, listing) -> Optional[PropertySearchResponse]:
+        """Parse individual listing element and return PropertySearchResponse"""
         try:
-            return{
-                'listing_id': listing.get('data-testid'),
-                # Price
-                'price': (listing.find('p', {'data-testid': 'property-card-title'}).get_text(strip=True) 
-                         if listing.find('p', {'data-testid': 'property-card-title'}) 
-                         else 'No price'),
-                
-                # Address
-                'address': (listing.find('h2').get_text(strip=True)
-                           if listing.find('h2')
-                           else 'No address'),
-                
-                # Property features
-                'bedrooms': (listing.find('div', {'data-testid': 'a-bedrooms'}).find('span').get_text(strip=True)
-                            if listing.find('div', {'data-testid': 'a-bedrooms'})
-                            else '0'),
-                
-                'bathrooms': (listing.find('div', {'data-testid': 'a-bathrooms'}).find('span').get_text(strip=True)
-                             if listing.find('div', {'data-testid': 'a-bathrooms'})
-                             else '0'),
-                
-                'car_parks': (listing.find('div', {'data-testid': 'a-carparks'}).find('span').get_text(strip=True)
-                             if listing.find('div', {'data-testid': 'a-carparks'})
-                             else '0'),
-                
-                # Land size
-                'land_size': (listing.find('div', {'data-testid': 'a-land-size'}).find('span').get_text(strip=True)
-                             if listing.find('div', {'data-testid': 'a-land-size'})
-                             else 'No land size'),
-                
-                # Property type
-                'property_type': (listing.find('span', class_='text-xs').get_text(strip=True)
-                                if listing.find('span', class_='text-xs')
-                                else 'No property type'),
-                
-                # Inspection date
-                'inspection_date': (listing.find('h4', {'data-testid': 'date-text-tag'}).get_text(strip=True)
-                                  if listing.find('h4', {'data-testid': 'date-text-tag'})
-                                  else 'No inspection date'),
-                
-                # Image URL
-                'image_urls': ([img['src'] for img in listing.find_all('img', {'class': 'image-gallery-image'})]
-                             if listing.find_all('img', {'class': 'image-gallery-image'})
-                             else ['No image available']),
-                
-                # Agent name 
-                'agent_name': (listing.find('div', {'data-testid': 'agency-image'}).find('img').get('alt')
-                                if listing.find('div', {'data-testid': 'agency-image'})
-                                else 'No Agent name')
-            }
+            # Extract all required fields
+            listing_id = listing.get('data-testid')
+            
+            price = (listing.find('p', {'data-testid': 'property-card-title'}).get_text(strip=True) 
+                    if listing.find('p', {'data-testid': 'property-card-title'}) 
+                    else 'Contact agent')
+            
+            address = (listing.find('h2').get_text(strip=True)
+                      if listing.find('h2')
+                      else 'No address')
+            
+            bedrooms = (listing.find('div', {'data-testid': re.compile(".*bedroom*")}).find('span').get_text(strip=True)
+                       if listing.find('div', {'data-testid': re.compile(".*bedroom*")})
+                       else '0')
+            
+            bathrooms = (listing.find('div', {'data-testid': re.compile(".*bathroom*")}).find('span').get_text(strip=True)
+                        if listing.find('div', {'data-testid': re.compile(".*bathroom*")})
+                        else '0')
+            
+            car_parks = (listing.find('div', {'data-testid': re.compile(".*carpark*")}).find('span').get_text(strip=True)
+                        if listing.find('div', {'data-testid': re.compile(".*carpark*")})
+                        else None)
+            
+            land_size = (listing.find('div', {'data-testid': re.compile(".*land-size*")}).find('span').get_text(strip=True)
+                        if listing.find('div', {'data-testid': re.compile(".*land-size*")})
+                        else None)
+            
+            property_type = (listing.find('span', class_=re.compile(r'(?=.*\btext-xs\b)(?=.*\bw-fit\b)')).get_text(strip=True)
+                           if listing.find('span', class_=re.compile(r'(?=.*\btext-xs\b)(?=.*\bw-fit\b)'))
+                           else None)
+            
+            inspection_date = (listing.find('h4', {'data-testid': 'date-text-tag'}).get_text(strip=True)
+                             if listing.find('h4', {'data-testid': 'date-text-tag'})
+                             else None)
+            
+            image_urls = ([img['src'] for img in listing.find_all('img', {'class': 'image-gallery-image'})]
+                        if listing.find_all('img', {'class': 'image-gallery-image'})
+                        else None)
+            
+            agent_name = (listing.find('div', {'data-testid': 'agency-image'}).find('img').get('alt')
+                         if listing.find('div', {'data-testid': 'agency-image'})
+                         else None)
+            
+            # Create and return PropertySearchResponse object
+            return PropertySearchResponse(
+                listing_id=listing_id,
+                price=price,
+                address=address,
+                bedrooms=bedrooms,
+                bathrooms=bathrooms,
+                car_parks=car_parks,
+                land_size=land_size,
+                property_type=property_type,
+                inspection_date=inspection_date,
+                image_urls=image_urls,
+                agent_name=agent_name
+            )
             
         except Exception as e:
             logging.error(f"Error parsing listing: {str(e)}")
@@ -121,27 +127,18 @@ class PropertyScraper:
 
     async def search_properties(
         self,
-        location: str,
-        min_price: Optional[float] = None,
-        max_price: Optional[float] = None,
-        min_beds: Optional[int] = None,
-        property_type: Optional[str] = None,
+        search_params: PropertySearchRequest,
         max_results: int = 20
-    ) -> List[Dict]:
+    ) -> List[PropertySearchResponse]:
         """
         Search properties with given criteria
-        Returns list of properties matching the criteria
+        Returns list of PropertySearchResponse objects matching the criteria
         """
         try:
             # Construct search URL with filters
-            search_url = self._build_search_url(
-                location=location,
-                min_beds=min_beds,
-                min_price=min_price,
-                max_price=max_price,
-                property_type=property_type
-            )
-            print(search_url)
+            search_url = self._build_search_url(search_params)
+            logging.info(f"Searching properties with URL: {search_url}")
+            
             # Get search results page
             html = self._get_page(search_url)
             if not html:
@@ -150,9 +147,7 @@ class PropertyScraper:
             # Parse the page
             soup = BeautifulSoup(html, 'html.parser')
             pattern = re.compile(r'listing-\d+')
-
             listing_elements = soup.find_all('span', {'data-testid': pattern})
-
 
             # Parse and filter listings
             results = []
@@ -160,13 +155,11 @@ class PropertyScraper:
                 if len(results) >= max_results:
                     break
 
-                listing_data = self._parse_listing(listing)
-                if not listing_data:
-                    continue
-                # Apply filters
-                
-                results.append(listing_data)
+                property_response = self._parse_listing(listing)
+                if property_response:
+                    results.append(property_response)
 
+            logging.info(f"Found {len(results)} properties matching criteria")
             return results
 
         except Exception as e:
@@ -182,3 +175,4 @@ class PropertyScraper:
             return float(price_str)
         except (ValueError, AttributeError):
             return None 
+        

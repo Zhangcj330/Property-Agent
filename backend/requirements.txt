@@ -18,3 +18,4 @@ requests
 fake-useragent
 pandas 
 google-generativeai
+firebase-admin
