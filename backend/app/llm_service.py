@@ -156,7 +156,7 @@ def PreferenceGraph():
     def check_worker(state: State) -> State:
         """Check if all required preferences are present"""
         required_fields = ["location", "max_price", "property_type"]
-        required_preferences = ["style", "layout", "community"]
+        required_preferences = ["Style", "SchoolDistrict", "Community"]
         # Check each required field
         missing = []
         for field in required_fields:
@@ -329,11 +329,26 @@ def PreferenceGraph():
             
         try:
             ambiguity_prompt = """As a Real Estate Advisor AI, your primary role is to identify and clarify ambiguities 
-            or contradictions in the client's stated preferences or requirements. 
+            or contradictions in the client's stated preferences or requirements in user preferences based on the following general property search categories:
+            Do NOT ask for overly specific details, especially regarding subjective aspects like "good schools" or "community feel." Understanding that the client highly values these categories is sufficient.
+
+            When the user is unable to provide specific location information for an extended period, you can try offering default options.
 
             Your goal is to avoid unnecessary probing into overly detailed specifics unless explicitly prompted by the 
             client's responses. Aim to provide concise and relevant assistance, ensuring an efficient and comfortable interaction.
+            
+            For each ambiguity, carefully assess its importance:
+            - "high": Critical contradictions that would significantly impact property recommendations
+            - "medium": Notable inconsistencies that could affect some recommendations
+            - "low": Minor issues that wouldn't substantially impact recommendations
+            
+            Only flag ambiguities with "high" importance that absolutely require clarification.
+            Note:
 
+            Occasional mentions of alternative preferences or slight temptations by the client are not contradictions if the client has clearly prioritized one over the others. Treat these as expressions of flexibility, not ambiguity.
+            Only mark as a contradiction if the client explicitly gives equally strong and conflicting requirements without clear prioritization.
+            
+            
             If no significant ambiguities are found, return {"ambiguities": [], "has_ambiguities": false}
 
             Return only significant ambiguities (max 2) in JSON format:          
@@ -341,6 +356,7 @@ def PreferenceGraph():
                 "ambiguities": [
                     {
                         "type": "contradiction|vagueness|unrealistic",
+                        "field": "location|price|size|property_type|school_district|community",
                         "description": "Description of the ambiguity",
                         "importance": "high|medium|low",
                         "clarification_question": "Suggested question to resolve ambiguity"
@@ -368,13 +384,22 @@ def PreferenceGraph():
             parser = JsonOutputParser()
             analysis = parser.invoke(response)
             
+            # Filter ambiguities to only include high importance ones
+            high_importance_ambiguities = [
+                ambiguity for ambiguity in analysis.get("ambiguities", [])
+                if ambiguity.get("importance") == "high"
+            ]
+            
+            # Update has_ambiguities flag based on filtered list
+            has_high_importance_ambiguities = len(high_importance_ambiguities) > 0
+            
             # Store ambiguity information in state
-            state["has_ambiguities"] = analysis.get("has_ambiguities", False)
-            state["ambiguities"] = analysis.get("ambiguities", [])
+            state["has_ambiguities"] = has_high_importance_ambiguities
+            state["ambiguities"] = high_importance_ambiguities
             
             # print(f"Ambiguity check result: has_ambiguities={state['has_ambiguities']}")
             # if state["has_ambiguities"]:
-            #     print(f"Found ambiguities: {state['ambiguities']}")
+            #     print(f"Found high importance ambiguities: {state['ambiguities']}")
             
         except Exception as e:
             print(f"Error in ambiguity_worker: {e}")
@@ -456,7 +481,7 @@ class LLMService:
             messages=[HumanMessage(content=user_input)],
             userpreferences=preferences or UserPreferences(),
             propertysearchrequest=search_params or PropertySearchRequest(),
-            missing_field=None,
+            current_missing_field=None,
             is_complete=False,
             chat_history=self.chat_history
         )

@@ -61,7 +61,8 @@ class TestPreferenceExtraction:
         print(f"\n对话轮次 {turns_taken}:")
         print(f"房产顾问: {assistant_message}")
         print(f"用户: {initial_query}")
-        print(f"当前状态: {state['ambiguities']}")
+        print(f"模糊字段: {state['ambiguities']}")
+        print(f"用户偏好: {state['userpreferences']}")
         print("---")
         # Continue conversation until complete or max turns reached
         while not state.get("is_complete", False) and turns_taken < max_turns:
@@ -101,7 +102,8 @@ class TestPreferenceExtraction:
             print(f"\n对话轮次 {turns_taken}:")
             print(f"房产顾问: {assistant_message}")
             print(f"用户: {user_response.content}")
-            print(f"当前状态: {state['ambiguities']}")
+            print(f"模糊字段: {state['ambiguities']}")
+            print(f"用户偏好: {state['userpreferences']}")
             print("---")
                 
         return state, turns_taken
@@ -123,7 +125,8 @@ class TestPreferenceExtraction:
         - Want a garden for the kids to play
         - Need parking for 2 cars
         - Commute to CBD should be under 45 minutes
-        
+        - Safe & Family-Friendly community
+
         You are decisive and clear about your requirements.
         """
         
@@ -141,8 +144,8 @@ class TestPreferenceExtraction:
         
         assert final_state.get("is_complete", False), f"Failed to complete preference extraction in {turns} turns"
         assert "NSW" in search_params.get("state", ""), "Failed to extract state"
-        assert search_params.get("min_price", 0) >= 1500000, "Failed to extract minimum price"
-        assert search_params.get("max_price", 0) <= 2000000, "Failed to extract maximum price"
+        assert search_params.get("min_price", 0) >= 2500000, "Failed to extract minimum price"
+        assert search_params.get("max_price", 0) <= 3000000, "Failed to extract maximum price"
         assert search_params.get("min_bedrooms", 0) >= 4, "Failed to extract bedroom requirement"
         assert "house" in search_params.get("property_type", "").lower(), "Failed to extract property type"
         
@@ -183,7 +186,7 @@ class TestPreferenceExtraction:
             user_persona, 
             initial_query,
             max_turns=15,  # More turns allowed for vague users
-            delay_seconds=4  # Slightly longer delay for complex scenarios
+            delay_seconds=5  # Slightly longer delay for complex scenarios
         )
         
         # Check if the system prompted for clarification on vague terms
