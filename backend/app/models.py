@@ -3,22 +3,31 @@ from typing import Optional, List, Dict, Tuple, Any
 from typing_extensions import TypedDict
 from datetime import datetime
 
+class UserPreference(TypedDict):
+    """User preference for property search"""
+    preference: Optional[str]
+    confidence_score: float 
+    weight: float 
+
 class UserPreferences(TypedDict):
-    Location: Tuple[Optional[str], float] = (None, 1.0)
-    Price: Tuple[Optional[str], float] = (None, 1.0)
-    Size: Tuple[Optional[str], float] = (None, 1.0)
-    Layout: Tuple[Optional[str], float] = (None, 1.0)
-    PropertyType: Tuple[Optional[str], float] = (None, 1.0)
-    Features: Tuple[Optional[str], float] = (None, 1.0)
-    Condition: Tuple[Optional[str], float] = (None, 1.0)
-    Environment: Tuple[Optional[str], float] = (None, 1.0)
-    Style: Tuple[Optional[str], float] = (None, 1.0)
-    Quality: Tuple[Optional[str], float] = (None, 1.0)
-    Room: Tuple[Optional[str], float] = (None, 1.0)
-    SchoolDistrict: Tuple[Optional[str], float] = (None, 1.0)
-    Community: Tuple[Optional[str], float] = (None, 1.0)
-    Transport: Tuple[Optional[str], float] = (None, 1.0)
-    Other: Tuple[Optional[str], float] = (None, 1.0)
+    """User preferences for property search
+    The first element is the preference value, the second is the confidence score, the third is the weight
+    """
+    Location: UserPreference = UserPreference(preference=None, confidence_score=0.0, weight=0.5)
+    Price: UserPreference = UserPreference(preference=None, confidence_score=0.0, weight=0.5)
+    Size: UserPreference = UserPreference(preference=None, confidence_score=0.0, weight=0.5)
+    Layout: UserPreference = UserPreference(preference=None, confidence_score=0.0, weight=0.5)  
+    PropertyType: UserPreference = UserPreference(preference=None, confidence_score=0.0, weight=0.5)
+    Features: UserPreference = UserPreference(preference=None, confidence_score=0.0, weight=0.5)
+    Condition: UserPreference = UserPreference(preference=None, confidence_score=0.0, weight=0.5)
+    Environment: UserPreference = UserPreference(preference=None, confidence_score=0.0, weight=0.5)
+    Style: UserPreference = UserPreference(preference=None, confidence_score=0.0, weight=0.5)
+    Quality: UserPreference = UserPreference(preference=None, confidence_score=0.0, weight=0.5)
+    Room: UserPreference = UserPreference(preference=None, confidence_score=0.0, weight=0.5)
+    SchoolDistrict: UserPreference = UserPreference(preference=None, confidence_score=0.0, weight=0.5)
+    Community: UserPreference = UserPreference(preference=None, confidence_score=0.0, weight=0.5)
+    Transport: UserPreference = UserPreference(preference=None, confidence_score=0.0, weight=0.5)        
+    Other: UserPreference = UserPreference(preference=None, confidence_score=0.0, weight=0.5)
 
 # Request model for property search
 class PropertySearchRequest(TypedDict):
