@@ -306,10 +306,11 @@ def PreferenceGraph():
         
         # For preferences, check if values exist and are meaningful
         for field in required_preferences:
-            # Check if preference exists, has a value, and the value is not None
+            # Check if preference exists, has a value, and the value is not None or "Not specified"
             if (field not in state["userpreferences"] or 
                 not state["userpreferences"][field] or 
-                not state["userpreferences"][field].get("preference")):
+                not state["userpreferences"][field].get("preference") or
+                state["userpreferences"][field].get("preference") == "Not specified"):
                 missing.append(field)
         
         # Special handling for location - if we have state but not specific suburb
