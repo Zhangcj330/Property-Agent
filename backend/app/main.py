@@ -43,8 +43,17 @@ async def chat_endpoint(chat_input: ChatInput):
         chat_input.search_params
     )
 
+    # Extract response message content, handling both dict and object formats
+    response_message = ""
+    if final_state["messages"]:
+        last_message = final_state["messages"][-1]
+        if isinstance(last_message, dict) and "content" in last_message:
+            response_message = last_message["content"]
+        elif hasattr(last_message, "content"):
+            response_message = last_message.content
+
     response_data = {
-        "response": final_state["messages"][-1].content if final_state["messages"] else "",
+        "response": response_message,
         "preferences": final_state["userpreferences"] if final_state["userpreferences"] else None,
         "search_params": final_state["propertysearchrequest"] if final_state["propertysearchrequest"] else None
     }
@@ -52,51 +61,50 @@ async def chat_endpoint(chat_input: ChatInput):
     # If we have search parameters, trigger the property search flow
     if final_state.get("is_complete") :
         print("Search parameters found, triggering property search flow")
-        # try:
-        #     # 1. Search for properties
-        #     property_results = await search_properties(final_state["propertysearchrequest"])
+        try:
+            # 1. Search for properties
+            property_results = await search_properties(final_state["propertysearchrequest"])
 
-        #     if property_results:
-        #         analyzed_properties: List[FirestoreProperty] = []
+            if property_results:
+                analyzed_properties: List[FirestoreProperty] = []
                 
-        #         for property in property_results:
-        #             # Get or create property with analysis
-        #             stored_property = await firestore_service.get_property(property.listing_id)
+                for property in property_results:
+                    # Get or create property with analysis
+                    stored_property = await firestore_service.get_property(property.listing_id)
                     
-        #             if stored_property and stored_property.image_analysis:
-        #                 analyzed_properties.append(stored_property)
-        #             elif property.image_urls:
-        #                 # Create new analysis
-        #                 image_analysis = await process_image(
-        #                     ImageAnalysisRequest(image_urls=property.image_urls)
-        #                 )
-        #                 # Save property and update with analysis
-        #                 await firestore_service.save_property(property)
-        #                 await firestore_service.update_property_analysis(
-        #                     property.listing_id, 
-        #                     image_analysis
-        #                 )
-        #                 # Create response object
-        #                 analyzed_property = FirestoreProperty(
-        #                     properties_search=property,
-        #                     image_analysis=image_analysis
-        #                 )
-        #                 analyzed_properties.append(analyzed_property)
+                    if stored_property and stored_property.analysis:
+                        analyzed_properties.append(stored_property)
+                    elif property.image_urls:
+                    # Create new analysis
+                        image_analysis = await process_image(
+                            ImageAnalysisRequest(image_urls=property.image_urls)
+                        )
+                        # Save property and update with analysis
+                        await firestore_service.save_property(property)
+                        await firestore_service.update_property_analysis(
+                            property.listing_id, 
+                            image_analysis
+                        )
+                        # Get the updated property with analysis
+                        analyzed_property = await firestore_service.get_property(property.listing_id)
+                        if analyzed_property:
+                            analyzed_properties.append(analyzed_property)
 
-        #         # 3. Get recommendations based on preferences and enriched properties
-        #         if final_state.get("userpreferences") and analyzed_properties:
-        #             recommendations = await recommend_properties(
-        #                 properties=analyzed_properties,
-        #                 preferences=final_state["userpreferences"]
-        #             )
-        #             response_data["recommendations"] = recommendations
+                # 3. Get recommendations based on preferences and enriched properties
+                if final_state.get("userpreferences") and analyzed_properties:
+                    recommendations = await recommend_properties(
+                        properties=analyzed_properties,
+                        preferences=final_state["userpreferences"]
+                    )
+                    print("Recommendations: ", recommendations)
+                    response_data["recommendations"] = recommendations
 
-        #         response_data["properties"] = analyzed_properties
+                response_data["properties"] = analyzed_properties
 
-        # except Exception as e:
-        #     print(f"Error in property search flow: {str(e)}")
-        #     # Don't raise exception, just continue with chat response
-        #     pass
+        except Exception as e:
+            print(f"Error in property search flow: {str(e)}")
+            # Don't raise exception, just continue with chat response
+            pass
 
     return response_data
 
@@ -136,7 +144,7 @@ async def process_image(image_urls: ImageAnalysisRequest) -> PropertyAnalysis:
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post(f"{v1_prefix}/properties", tags=["Properties"])
+@app.post(f"{v1_prefix}/properties", tags=["Properties"], status_code=201)
 async def create_property(property_data: PropertySearchResponse):
     """Save a new property listing"""
     try:

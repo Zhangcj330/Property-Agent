@@ -44,8 +44,9 @@ class FirestoreService:
         try:
             doc_ref = self.properties_collection.document(listing_id)
             # Update only the analysis field and updated_at timestamp
+            analysis_dict = analysis.model_dump() if hasattr(analysis, 'model_dump') else analysis
             doc_ref.update({
-                "analysis": analysis.model_dump() if analysis else None,
+                "analysis": analysis_dict,
                 "updated_at": datetime.now()
             })
             return True

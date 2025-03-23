@@ -135,7 +135,7 @@ def show_sidebar():
         # Property Type
         property_type = st.multiselect(
             "Property Type",
-            options=['Any', 'house', 'apartment', 'condo', 'townhouse'],
+            options=['Any', 'House', 'Apartment', 'Condo', 'Townhouse'],
             default=st.session_state.search_params.get('property_type', [])
         )
         
@@ -179,12 +179,15 @@ def process_chat_message(message: str):
                 st.session_state.preferences.update(chat_response["preferences"])
             if chat_response.get("search_params"):
                 st.session_state.search_params.update(chat_response["search_params"])
-                
+            if chat_response.get("recommendations"):
+                st.session_state.recommendations = chat_response["recommendations"]
             # Add a visual indicator that preferences were updated
             if (chat_response.get("preferences") or chat_response.get("search_params")):
                 st.sidebar.success("✅ Your preferences have been updated!")
-
-            return chat_response["response"]
+            if chat_response.get("recommendations"):
+                return chat_response["recommendations"]
+            else:
+                return chat_response["response"]
         else:
             return "Sorry, I'm having trouble understanding. Could you rephrase that?"
     except Exception as e:

@@ -211,35 +211,8 @@ def PreferenceGraph():
         merged_search_params = {**current_search_params}
         if new_search_params:
             for field, value in new_search_params.items():
-                if value is not None:  # Only update if value is not None
-                    if field in ["location", "property_type"] and value:
-                        # Ensure these are lists
-                        if not isinstance(value, list):
-                            value = [value]
-                        
-                        # If current value exists, merge lists with new values taking precedence
-                        current_value = merged_search_params.get(field)
-                        if current_value:
-                            if not isinstance(current_value, list):
-                                current_value = [current_value]
-                            
-                            # Add new values that don't already exist
-                            merged_value = list(current_value)
-                            for item in value:
-                                if item not in merged_value:
-                                    merged_value.append(item)
-                            
-                            merged_search_params[field] = merged_value
-                        else:
-                            merged_search_params[field] = value
-                    else:
-                        # 对于其他字段，只在当前值不存在或为None时更新
-                        if field not in merged_search_params or merged_search_params[field] is None:
-                            merged_search_params[field] = value
-                        # 对于数值类型的特殊处理
-                        elif isinstance(merged_search_params[field], (int, float)) and merged_search_params[field] == 0:
-                            merged_search_params[field] = value
-                            
+                merged_search_params[field] = value
+
         # Update state with merged values
         state["userpreferences"] = merged_preferences
         state["propertysearchrequest"] = merged_search_params
@@ -387,8 +360,6 @@ def PreferenceGraph():
     # Worker: Check for ambiguities in user preferences
     def ambiguity_worker(state: State) -> State:
         """Identify and resolve ambiguities in user preferences and search parameters"""
-        current_preferences = state["userpreferences"]
-        current_search_params = state["propertysearchrequest"]
         chat_history = state.get("chat_history", [])
         
         if not chat_history:
@@ -396,7 +367,8 @@ def PreferenceGraph():
             
         try:
             ambiguity_prompt = """You are an expert Australian Real Estate Advisor specializing in identifying conflicting requirements and ambiguities in client preferences.
-            
+            give subjective recommendations and suggestions for the user based on your knowledge of the market when you find users fail to clarify their preferences more clearly.
+
             Your task is to carefully analyze conversations to detect THREE types of ambiguity:
             1. CONTRADICTIONS: When client states two directly conflicting requirements (e.g., "quiet neighborhood" AND "close to nightlife")
             2. VAGUENESS: When client uses subjective terms without specifics (e.g., "nice area", "affordable", "modern")
@@ -404,7 +376,7 @@ def PreferenceGraph():
             
             For VAGUE preferences:
             - DO NOT flag common subjective terms like "good schools" or "nice community" as ambiguities unless they're central to the search
-            - Only flag vague terms when specificity is ABSOLUTELY NECESSARY for property search
+            - Only flag vague terms when specificity is ABSOLUTELY NECESSARY for property search, for example, when the user mentions a broad area like "Sydney" or "Melbourne" without specifying a suburb.
             - For moderately vague terms, make reasonable inferences rather than flagging as ambiguities
             
             For CONTRADICTORY preferences:
@@ -438,7 +410,7 @@ def PreferenceGraph():
                 "ambiguities": [
                     {
                         "type": "contradiction|vagueness|unrealistic",
-                        "field": "location|price|size|property_type|school_district|community",
+                        "field": "location|price|size|property_type",
                         "description": "Description of the ambiguity",
                         "importance": "high|medium|low",
                         "clarification_question": "Suggested question to resolve ambiguity"

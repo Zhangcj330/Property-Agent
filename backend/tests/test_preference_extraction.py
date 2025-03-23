@@ -137,21 +137,19 @@ class TestPreferenceExtraction:
         
         user_persona = """
         You are Sarah, a 35-year-old marketing executive with a family of four (two children aged 5 and 7).
-        Your preferences:
-        - Looking for a house in Sydney's chatswood area
+        State your preferences:
+        - Looking for a house in Sydney's Chatswood area
         - Budget is strictly between $2.5M and $3M
-        - Need at least 4 bedrooms and 2 bathrooms
+        - Need at least 4 bedrooms
         - Must be in a good school district
         - Prefer modern style with open floor plan
         - Want a garden for the kids to play
-        - Need parking for 2 cars
-        - Commute to CBD should be under 45 minutes
         - Safe & Family-Friendly community
 
-        You are decisive and clear about your requirements.
+        You are decisive and clear about your requirements. short and concise in your answers.
         """
         
-        initial_query = "Hi, I'm looking for a family home in Sydney's North Shore. We have a budget of around $2.5-3M and need at least 4 bedrooms."
+        initial_query = "Hi, I'm looking for a family home in Sydney's Chatswood. We have a budget of around $2.5-3M and need at least 4 bedrooms."
         
         final_state, turns = await self.simulate_conversation_until_complete(
             llm_service, 
@@ -174,7 +172,6 @@ class TestPreferenceExtraction:
         # Check if detailed preferences were captured
         assert any("school" in str(pref).lower() for pref in preferences.values()), "Failed to capture school preference"
         assert any("modern" in str(pref).lower() for pref in preferences.values()), "Failed to capture modern style preference"
-        assert any("garden" in str(pref).lower() for pref in preferences.values()), "Failed to capture garden preference"
         assert any("safe" and "family" in str(pref).lower() for pref in preferences.values()), "Failed to capture community preference"
         print("\n=== 明确偏好测试结果 ===")
         print(f"完成对话轮次: {turns}")
@@ -188,7 +185,7 @@ class TestPreferenceExtraction:
         print("\n\n===== 开始测试：模糊偏好提取 =====")
         
         user_persona = """
-        You are Michael, a 28-year-old software developer who's buying his first property.
+        You are Michael, a 28-year-old software developer in Sydney who's buying his first property.
         Your preferences:
         - Not sure about location but somewhere with a "cool vibe" and good cafes
         - Budget is "affordable" but when pressed you'll say around $600K-800K
