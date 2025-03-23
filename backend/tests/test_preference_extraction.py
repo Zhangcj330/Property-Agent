@@ -173,7 +173,7 @@ class TestPreferenceExtraction:
         
         # Check if detailed preferences were captured
         assert any("school" in str(pref).lower() for pref in preferences.values()), "Failed to capture school preference"
-        assert any("modern" in str(pref).lower() for pref in preferences.values()), git"Failed to capture modern style preference"
+        assert any("modern" in str(pref).lower() for pref in preferences.values()), "Failed to capture modern style preference"
         assert any("garden" in str(pref).lower() for pref in preferences.values()), "Failed to capture garden preference"
         assert any("safe" and "family" in str(pref).lower() for pref in preferences.values()), "Failed to capture community preference"
         print("\n=== 明确偏好测试结果 ===")
