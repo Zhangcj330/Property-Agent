@@ -23,28 +23,77 @@ class PropertyScraper:
 
     def _build_search_url(self, search_params: PropertySearchRequest) -> str:
         """Build the search URL with the given filters"""
-        search_url = f"{self.base_url}/for-sale/"
+        # 使用不带www的域名
+        base_url = "https://view.com.au"
+        search_url = f"{base_url}/for-sale/"
         
         # Add bedrooms filter if specified
         if search_params.get("min_bedrooms"):
             search_url += f"{search_params['min_bedrooms']}-bedrooms/"
             
-        # Add location filter
-        location = search_params.get("location", "")
-        if location:
-            search_url += f"?loc={location.lower().replace(' ', '-')}"
+        # Start with query parameters
+        search_url += "?"
+        
+        # 参数按照示例URL的顺序添加
+        # 1. 先添加bathrooms（如果有）
+        if search_params.get("min_bathrooms"):
+            search_url += f"bathrooms={search_params['min_bathrooms']}"
+            # 添加后面的参数需要&前缀
+            have_params = True
         else:
-            search_url += "?"
+            have_params = False
             
-        # Add price range filters
+        # 2. 添加cars（如果有）
+        if search_params.get("car_parks"):
+            if have_params:
+                search_url += "&"
+            search_url += f"cars={search_params['car_parks']}"
+            have_params = True
+            
+        # 3. 添加location（如果有）
+        locations = search_params.get("location")
+        if locations and isinstance(locations, list) and len(locations) > 0:
+            if have_params:
+                search_url += "&"
+            # 格式化locations并进行URL编码（将逗号编码为%2C）
+            formatted_locations = [loc.lower().replace(' ', '-') for loc in locations]
+            search_url += f"loc={','.join(formatted_locations).replace(',', '%2C')}"
+            have_params = True
+        
+        # 4. 添加价格范围
         if search_params.get("min_price"):
-            search_url += f"&priceFrom={int(search_params['min_price'])}"
-        if search_params.get("max_price"):
-            search_url += f"&priceTo={int(search_params['max_price'])}"
+            if have_params:
+                search_url += "&"
+            search_url += f"priceFrom={int(search_params['min_price'])}"
+            have_params = True
             
-        # Add property type filter
-        if search_params.get("property_type"):
-            search_url += f"&propertyTypes={search_params['property_type'].capitalize()}"
+        if search_params.get("max_price"):
+            if have_params:
+                search_url += "&"
+            search_url += f"priceTo={int(search_params['max_price'])}"
+            have_params = True
+            
+        # 5. 添加土地面积
+        if search_params.get("land_size_from"):
+            if have_params:
+                search_url += "&"
+            search_url += f"landSizeFrom={int(search_params['land_size_from'])}"
+            have_params = True
+            
+        if search_params.get("land_size_to"):
+            if have_params:
+                search_url += "&"
+            search_url += f"landSizeTo={int(search_params['land_size_to'])}"
+            have_params = True
+            
+        # 6. 最后添加property_type
+        property_types = search_params.get("property_type")
+        if property_types and isinstance(property_types, list) and len(property_types) > 0:
+            if have_params:
+                search_url += "&"
+            # 格式化property_types并进行URL编码（将逗号编码为%2C）
+            formatted_types = [p_type.capitalize() for p_type in property_types]
+            search_url += f"propertyTypes={','.join(formatted_types).replace(',', '%2C')}"
             
         return search_url
         
@@ -139,15 +188,21 @@ class PropertyScraper:
             search_url = self._build_search_url(search_params)
             logging.info(f"Searching properties with URL: {search_url}")
             
+            # Log search parameters for debugging
+            logging.debug(f"Search parameters: {search_params}")
+            
             # Get search results page
             html = self._get_page(search_url)
             if not html:
+                logging.error("Failed to fetch search results page")
                 return []
 
             # Parse the page
             soup = BeautifulSoup(html, 'html.parser')
             pattern = re.compile(r'listing-\d+')
             listing_elements = soup.find_all('span', {'data-testid': pattern})
+            
+            logging.info(f"Found {len(listing_elements)} raw listings on page")
 
             # Parse and filter listings
             results = []
@@ -159,7 +214,7 @@ class PropertyScraper:
                 if property_response:
                     results.append(property_response)
 
-            logging.info(f"Found {len(results)} properties matching criteria")
+            logging.info(f"Successfully parsed {len(results)} properties matching criteria")
             return results
 
         except Exception as e:

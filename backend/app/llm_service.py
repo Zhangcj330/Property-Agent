@@ -5,7 +5,7 @@ import json
 from typing_extensions import TypedDict
 from enum import Enum
 
-from langchain_community.chat_models import ChatOpenAI
+from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 from langchain.memory import ChatMessageHistory
 from langchain_core.output_parsers import JsonOutputParser
@@ -31,7 +31,7 @@ class UserPreferencesSearch(BaseModel):
     search_parameters: PropertySearchRequest
 
 # Default LLM
-llm = ChatOpenAI(
+llm = ChatGoogleGenerativeAI(
     api_key=settings.GEMINI_API_KEY,
     base_url=settings.BASE_URL,
     model="gemini-2.0-flash"
@@ -50,6 +50,8 @@ def PreferenceGraph():
         chat_history = state["chat_history"]
         current_preferences = state["userpreferences"]
         current_search_params = state["propertysearchrequest"]
+        
+        print(f"Starting extract_worker with current_search_params: {current_search_params}")
         
         # Build preference summary for context
         preference_summary = ""
@@ -72,125 +74,93 @@ def PreferenceGraph():
                 if value is not None:
                     preference_summary += f"- {field.capitalize()}: {value}\n"
         
-        # Part 2: Smart conversation history management
-        # Set a reasonable limit for conversation history (e.g., last 10 exchanges)
+        # Smart conversation history management
         MAX_HISTORY_LENGTH = 10
         recent_history = chat_history[-MAX_HISTORY_LENGTH*2:] if len(chat_history) > MAX_HISTORY_LENGTH*2 else chat_history
         
-        # Part 3: Extract explicit preferences from conversation
+        # Extract explicit preferences from conversation
         extraction_prompt = """You are an expert Australian real estate consultant and demographic analyst. 
         You are specializing in clarifying client requirements for property searches.
         
         Analyze the conversation THOROUGHLY to extract TWO types of information:
         1. Explicit preferences directly stated by the user
-        2. Implicit preferences that can be reasonably inferred from context
+        2. Implicit preferences that can be reasonably inferred from context with high confidence
         
-        Rules for making inferences about vague or implied preferences:
-        1. For vague terms like "affordable", "nice area", "good schools", make contextual inferences:
-           - "Affordable" → Estimate price range based on location mentioned and property type
-           - "Nice area" → Infer preferences for safety, amenities, or community characteristics
-           - "Good schools" → Mark SchoolDistrict as important without requiring specific school names
-        2. Use demographic knowledge to make reasonable assumptions:
-           - Families with children ALWAYS need good schools (mark SchoolDistrict as high priority) and outdoor space/garden
-           - Young professionals may prioritize commute time and lifestyle amenities
-           - Retirees might prefer single-level properties with low maintenance
-        3. Assign appropriate IMPORTANCE weights based on how much the user cares about this feature:
-           - High weights (0.8-1.0) for explicitly emphasized requirements ("must have", "very important", etc.)
+        IMPORTANT: Only return preferences and search parameters that are CLEARLY stated or can be CONFIDENTLY inferred.
+        If you cannot determine a preference with reasonable confidence, DO NOT include it in your response.
+        
+        Rules for making inferences about preferences:
+        1. For vague terms, only make inferences when context provides strong support:
+           - "Affordable" → Only estimate price range if location and property type are known
+           - "Nice area" → Only infer specific characteristics if contextual clues exist
+        2. For demographic inferences, only include when strongly supported by conversation:
+           - Only infer family needs if children are explicitly mentioned
+           - Only infer commute preferences if work location is mentioned
+        3. Assign appropriate IMPORTANCE weights based on user emphasis:
+           - High weights (0.8-1.0) for explicitly emphasized requirements ("must have", "very important")
            - Medium weights (0.4-0.7) for standard preferences
            - Lower weights (0.1-0.3) for "nice to have" preferences
-        4. SEPARATELY, assign CONFIDENCE scores for each preference:
-           - High confidence (0.8-1.0) for explicitly stated preferences
+        4. Assign CONFIDENCE scores honestly reflecting certainty:
+           - High confidence (0.8-1.0) only for explicitly stated preferences
            - Medium confidence (0.4-0.7) for strongly implied preferences
-           - Low confidence (0.1-0.3) for demographic inferences or contextual hints
-        5. When faced with vague terms, make reasonable DEFAULT ASSUMPTIONS rather than leaving fields empty
+           - Low confidence (0.1-0.3) for reasonable inferences with some support
+        5. When faced with uncertainty, OMIT the field rather than making weak assumptions
         
-        IMPORTANT: When a user mentions they have a family with children, ALWAYS include the following inferences:
-        - SchoolDistrict: {"preference": "Good schools important for children", "weight": 0.8, "confidence_score": 0.7}  # High importance, medium confidence
-        - Features: {"preference": "Child-friendly space, garden or yard for kids", "weight": 0.7, "confidence_score": 0.7}  # Medium importance, medium confidence
-        - Community: {"preference": "Family-friendly neighborhood", "weight": 0.7, "confidence_score": 0.7}  # Medium importance, medium confidence
-        - Safety: {"preference": "Safe environment for children", "weight": 0.8, "confidence_score": 0.8}  # High importance, high confidence
-        
-        Handle these common vague scenarios:
-        - Budget: If user says "affordable" without specifics, estimate based on location and property type
-        - Location: If only city mentioned, include popular/central suburbs as default options
-        - Property type: If unclear, infer from lifestyle clues (family→house, single→apartment)
-        - Features: Connect lifestyle mentions to likely feature needs
-          * Family with children → garden/yard, play areas, storage, separate living zones
-          * Professionals → home office, entertainment areas, low maintenance
-          * Downsizers → single level, low maintenance, accessibility features
-
-        1. Detailed user preferences with importance weights (0.0-1.0) AND confidence scores (0.0-1.0):
+        1. Only include user preferences that are clear from the conversation:
         {
-            "Location": {"preference": "specific-location", "weight": importance_weight, "confidence_score": confidence_score},
-            "Price": {"preference": "price-range", "weight": importance_weight, "confidence_score": confidence_score},
-            "Size": {"preference": "size-requirements", "weight": importance_weight, "confidence_score": confidence_score},
             "Layout": {"preference": "layout-preferences", "weight": importance_weight, "confidence_score": confidence_score},
-            "PropertyType": {"preference": "type-preference", "weight": importance_weight, "confidence_score": confidence_score},
             "Features": {"preference": "desired-features", "weight": importance_weight, "confidence_score": confidence_score},
             "Condition": {"preference": "condition-preference", "weight": importance_weight, "confidence_score": confidence_score},
             "Environment": {"preference": "environment-requirements", "weight": importance_weight, "confidence_score": confidence_score},
             "Style": {"preference": "style-preference", "weight": importance_weight, "confidence_score": confidence_score},
             "Quality": {"preference": "quality-requirements", "weight": importance_weight, "confidence_score": confidence_score},
-            "Room": {"preference": "room-requirements", "weight": importance_weight, "confidence_score": confidence_score},
             "SchoolDistrict": {"preference": "school-requirements", "weight": importance_weight, "confidence_score": confidence_score},
             "Community": {"preference": "community-preferences", "weight": importance_weight, "confidence_score": confidence_score},
             "Transport": {"preference": "transport-requirements", "weight": importance_weight, "confidence_score": confidence_score},
             "Other": {"preference": "other-preferences", "weight": importance_weight, "confidence_score": confidence_score}
         }
 
-        2. Specific search parameters:
+        2. Only include search parameters that can be confidently determined:
         {
-            "location": "STATE-SUBURB-POSTCODE",
-            "suburb": "suburb name",
-            "state": "state code",
-            "postcode": number,
+            "location": ["STATE-SUBURB-POSTCODE"], // List of locations in STATE-SUBURB-POSTCODE format
             "min_price": number or null,
             "max_price": number or null,
             "min_bedrooms": number or null,
-            "property_type": "house/apartment/etc" or null
+            "min_bathrooms": number or null,
+            "property_type": ["House", "Unit", "Apartment", "Studio", "Townhouse", "Land", "Villa", "Rural"], // List of property types
+            "car_parks": number or null,
+            "land_size_from": number or null, // Minimum land size in sqm
+            "land_size_to": number or null, // Maximum land size in sqm
+            "geo_location": [latitude, longitude] or null // Array of two floating point numbers
         }
 
         For location format:
-        - Use STATE-SUBURB-POSTCODE format (e.g., "NSW-Chatswood-2067")
-        - For vague locations, provide state code at minimum, and estimate suburb if possible
-        - If only city is mentioned (e.g., "Sydney"), use STATE-City format (e.g., "NSW-Sydney")
-        
-        For price ranges:
-        - When only max price is mentioned, estimate reasonable min_price as 80% of max
-        - When only "affordable" is mentioned, estimate based on location and property type
-        - For luxury requests, adjust price ranges upward for the specified area
+        - Each location should be in STATE-SUBURB-POSTCODE format (e.g., "NSW-Chatswood-2067")
+        - Only include specific suburbs if clearly mentioned or strongly implied
+        - Return locations as an ARRAY of strings, even if there's only one location
+        - ALWAYS include the STATE code (NSW, VIC, QLD, etc.) at the beginning of each location
         
         For property types:
-        - Map informal terms to standard types (e.g., "unit" → "apartment", "townhouse/villa" → "townhouse")
-        - When property type is ambiguous, infer from context (family needs → "house", city lifestyle → "apartment")
+        - Only include property types explicitly mentioned or strongly implied
+        - Return property types as an ARRAY of strings
         
-        Additionally, make INTELLIGENT INFERENCES about unstated preferences:
-        - Pay close attention to subtle contextual clues in the conversation
-        - Use demographic patterns to fill in knowledge gaps
-        - For missing information, apply Australian real estate market knowledge:
-          * Sydney suburbs like North Shore, Eastern Suburbs and Inner West are high-priced premium areas
-          * Melbourne's inner suburbs (3-12km from CBD) are culturally diverse with good public transport
-          * Brisbane offers better affordability compared to Sydney and Melbourne
-          * For investors, areas with university proximity often have strong rental demand
-          * Coastal and waterfront locations typically command 20-30% premium
-        - For vague location mentions, make educated guesses:
-          * "Sydney" + "family" + "$1M-1.5M" → Western or Northwest suburbs
-          * "Melbourne" + "professional" + "lifestyle" → Inner city or Inner Eastern suburbs
-          * "Brisbane" + "affordable" → Southern or Western suburbs
+        For price ranges:
+        - Only include price information that is explicitly stated or can be confidently inferred
+        - Omit price fields if there is significant uncertainty
         
         IMPORTANT - UPDATE INSTRUCTIONS:
-        1. You must review the user's current preferences summary provided to you.
-        2. For conflicting information, consider BOTH importance weight AND confidence score:
-           - Preferences with higher importance to the user should generally be preserved
-           - New information with high confidence may update preferences with low confidence
-           - Explicitly changed preferences should always be updated regardless of importance
-        3. When a user clearly changes a preference, update it while maintaining its importance weight
-        4. If a user clarifies a previous vague statement, increase the confidence score while preserving importance
+        1. Review the user's current preferences summary provided to you.
+        2. ONLY return fields that need to be updated or added based on new information.
+        3. For each field, determine if the new information justifies an update:
+           - Clear changes in user preference always justify updates
+           - Higher confidence information should replace lower confidence information
+           - More specific information should replace vague information
+        4. Omit any fields where no update is needed or where uncertainty remains high
         
-        You MUST return BOTH objects in the format:
+        You MUST return BOTH objects in the format, including ONLY fields that need updating:
         {
-            "user_preferences": {preference object},
-            "search_parameters": {search parameters object}
+            "user_preferences": {only preferences that need updating},
+            "search_parameters": {only search parameters that need updating}
         }
         """
         
@@ -210,83 +180,73 @@ def PreferenceGraph():
         
         # Parse extracted preferences
         output = JsonOutputParser(pydantic_object=UserPreferencesSearch).invoke(response)
+        
         # Extract the relevant portions and parse them
         new_search_params = output["search_parameters"]
         new_user_prefs = output["user_preferences"]
 
-        # Intelligent preference merging with separate importance and confidence handling
+        # Simplified preference merging logic
+        # Only update fields that were returned by the LLM
         merged_preferences = {**current_preferences}
         for field, value in new_user_prefs.items():
             if field in merged_preferences:
-                # 获取当前的值、重要性和置信度
+                # Get the current preference
                 current_pref = merged_preferences[field]
-                current_value = current_pref.get("preference") if current_pref else None
-                current_importance = current_pref.get("weight", 0.5) if current_pref else 0.5
-                current_confidence = current_pref.get("confidence_score", 0.7) if current_pref else 0.7
+                current_confidence = current_pref.get("confidence_score", 0.5) if current_pref else 0.5
                 
-                # 获取新的值、重要性和置信度
-                new_value = value.get("preference") if value else None
-                new_importance = value.get("weight", 0.5) if value else 0.5
-                new_confidence = value.get("confidence_score", 0.7) if value else 0.7
+                # Get the new preference confidence
+                new_confidence = value.get("confidence_score", 0.5) if value else 0.5
                 
-                # 智能合并逻辑:
-                # 1. 如果内容变了且新的置信度高于旧的，则更新
-                # 2. 保留用户原始的重要性权重(除非新的明显更高)
-                # 3. 如果是模糊变为具体，则更新
-                should_update = False
-                # 根据用户明确的位置和价格变更总是需要更新
-                if field in ["Location", "Price"] and current_value != new_value and new_confidence > 0.6:
-                    should_update = True
-                # 如果内容变了且新的置信度明显更高，则更新
-                elif current_value != new_value and new_confidence > current_confidence + 0.2:
-                    should_update = True
-                # 从模糊变为具体情况
-                elif current_value and new_value and "vague" in str(current_value).lower() and "vague" not in str(new_value).lower():
-                    should_update = True
-                # 内容相同但用户表达了更高的重要性
-                elif current_value == new_value and new_importance > current_importance + 0.2:
-                    should_update = True
-                    
-                if should_update:
-                    # 在更新时保留较高的重要性权重
-                    final_importance = max(current_importance, new_importance)
-                    # 创建一个新的UserPreference对象
-                    merged_preferences[field] = {
-                        "preference": new_value,
-                        "weight": final_importance,
-                        "confidence_score": new_confidence
-                    }
+                # Update if new confidence is higher or equal
+                if new_confidence >= current_confidence:
+                    # Preserve the higher weight if available
+                    if current_pref and "weight" in current_pref and "weight" in value:
+                        value["weight"] = max(current_pref["weight"], value["weight"])
+                    merged_preferences[field] = value
             else:
-                # 新偏好字段，直接添加
+                # Add new preference
                 merged_preferences[field] = value
                 
-        # Similar intelligent merging for search parameters
+        # Simplified search parameters merging
         merged_search_params = {**current_search_params}
-        for field, value in new_search_params.items():
-            # For search parameters, we prioritize specificity
-            if field in merged_search_params:
-                current_value = merged_search_params[field]
-                
-                # For location, favor more specific locations
-                if field == "location":
-                    # If new value includes suburb or postcode but current doesn't, use new
-                    if ("-" in str(value) and "-" not in str(current_value)) or \
-                       (str(value).count("-") > str(current_value).count("-")):
-                        merged_search_params[field] = value
-                # For price, keep the most recent unless it's None
-                elif field in ["min_price", "max_price"] and value is not None:
-                    merged_search_params[field] = value
-                # For other parameters, prefer non-None values
-                elif value is not None:
-                    merged_search_params[field] = value
-            else:
-                # New parameter, simply add it if not None
-                if value is not None:
-                    merged_search_params[field] = value
-                
+        if new_search_params:
+            for field, value in new_search_params.items():
+                if value is not None:  # Only update if value is not None
+                    if field in ["location", "property_type"] and value:
+                        # Ensure these are lists
+                        if not isinstance(value, list):
+                            value = [value]
+                        
+                        # If current value exists, merge lists with new values taking precedence
+                        current_value = merged_search_params.get(field)
+                        if current_value:
+                            if not isinstance(current_value, list):
+                                current_value = [current_value]
+                            
+                            # Add new values that don't already exist
+                            merged_value = list(current_value)
+                            for item in value:
+                                if item not in merged_value:
+                                    merged_value.append(item)
+                            
+                            merged_search_params[field] = merged_value
+                        else:
+                            merged_search_params[field] = value
+                    else:
+                        # 对于其他字段，只在当前值不存在或为None时更新
+                        if field not in merged_search_params or merged_search_params[field] is None:
+                            merged_search_params[field] = value
+                        # 对于数值类型的特殊处理
+                        elif isinstance(merged_search_params[field], (int, float)) and merged_search_params[field] == 0:
+                            merged_search_params[field] = value
+                            
         # Update state with merged values
         state["userpreferences"] = merged_preferences
         state["propertysearchrequest"] = merged_search_params
+        
+        # Debug information
+        print(f"Updated search params: {merged_search_params}")
+        
         return state
 
     # Worker: Check if all required fields are present
@@ -299,10 +259,15 @@ def PreferenceGraph():
         # Check each required field
         missing = []
         
-        # For search parameters, check if values are present and not None
+        # For search parameters, check if values are present and not None or empty lists
         for field in required_fields:
             if field not in state["propertysearchrequest"] or state["propertysearchrequest"][field] is None:
                 missing.append(field)
+            elif field in ["location", "property_type"]:
+                # These fields should now be lists
+                value = state["propertysearchrequest"][field]
+                if not isinstance(value, list) or len(value) == 0:
+                    missing.append(field)
         
         # For preferences, check if values exist and are meaningful
         for field in required_preferences:
@@ -314,12 +279,17 @@ def PreferenceGraph():
                 missing.append(field)
         
         # Special handling for location - if we have state but not specific suburb
-        if "location" in missing and state["propertysearchrequest"].get("state"):
-            # If we at least have the state, consider location as partially filled
-            # and prioritize other missing fields first
-            missing.remove("location")
-            if not missing:  # If no other fields are missing, we can consider location
-                missing.append("location")
+        if "location" in missing and "location" in state["propertysearchrequest"]:
+            locations = state["propertysearchrequest"]["location"]
+            if isinstance(locations, list) and len(locations) > 0:
+                # Check if we have at least state information
+                has_state_info = any("-" in loc for loc in locations)
+                if has_state_info:
+                    # If we at least have the state, consider location as partially filled
+                    # and prioritize other missing fields first
+                    missing.remove("location")
+                    if not missing:  # If no other fields are missing, we can consider location
+                        missing.append("location")
         
         if missing:
             # Set the first missing field as current field
@@ -369,6 +339,7 @@ def PreferenceGraph():
             For LOCATION queries:
             - If user is vague about location, suggest specific suburbs based on their other requirements
             - Example: "Based on your budget and preference for good schools, suburbs like Chatswood, Epping, or Eastwood in Sydney could be good options."
+            - Remember that multiple locations can be searched, so ask if they'd like to include multiple areas
             
             For PRICE queries:
             - If user mentions "affordable" or "reasonable", provide specific price ranges for their desired area
@@ -377,6 +348,7 @@ def PreferenceGraph():
             For PROPERTY TYPE queries:
             - If user is unsure, suggest based on their lifestyle needs and budget
             - Example: "Since you mentioned low maintenance and being close to the city, a modern apartment or townhouse might be ideal for your situation."
+            - Remember that multiple property types can be selected, so ask if they'd like to include multiple types
             
             For STYLE queries:
             - Offer examples of common styles with brief descriptions
@@ -540,7 +512,23 @@ def PreferenceGraph():
         # print(f"Asking for clarification: {clarification_question}")
         
         return state
-
+    
+    def _importance_to_description(importance: str) -> str:
+        if importance == "high":
+            return "Critical issue that MUST be resolved before property search"
+        elif importance == "medium":
+            return "Notable issue that would benefit from clarification"
+        else:
+            return "Minor issue that can be resolved through reasonable assumptions"
+        
+    def _confidence_to_description(confidence: str) -> str:
+        if confidence == "high":
+            return "High confidence in the information"
+        elif confidence == "medium":
+            return "Medium confidence in the information"
+        else:
+            return "Low confidence in the information"
+    
     # Create the graph
     workflow = StateGraph(State)
     
@@ -604,25 +592,3 @@ class LLMService:
             self.chat_history.append({"role": "assistant", "content": last_message})
         
         return final_state
-
-def _importance_to_description(importance: float) -> str:
-    """Convert numerical importance to descriptive text"""
-    if importance >= 0.9:
-        return "Critical"
-    elif importance >= 0.7:
-        return "High"
-    elif importance >= 0.4:
-        return "Medium"
-    else:
-        return "Low"
-
-def _confidence_to_description(confidence: float) -> str:
-    """Convert numerical confidence to descriptive text"""
-    if confidence >= 0.9:
-        return "Very High"
-    elif confidence >= 0.7:
-        return "High"
-    elif confidence >= 0.4:
-        return "Medium"
-    else:
-        return "Low"

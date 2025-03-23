@@ -2,7 +2,6 @@ fastapi
 uvicorn
 openai
 langchain
-langchain-community
 langgraph
 pydantic
 python-dotenv
@@ -19,3 +18,7 @@ fake-useragent
 pandas 
 google-generativeai
 firebase-admin
+mcp
+langchain-mcp-adapters
+typing_extensions
+langchain-google-genai

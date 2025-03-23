@@ -13,17 +13,12 @@ class UserPreferences(TypedDict):
     """User preferences for property search
     The first element is the preference value, the second is the confidence score, the third is the weight
     """
-    Location: UserPreference = UserPreference(preference=None, confidence_score=0.0, weight=0.5)
-    Price: UserPreference = UserPreference(preference=None, confidence_score=0.0, weight=0.5)
-    Size: UserPreference = UserPreference(preference=None, confidence_score=0.0, weight=0.5)
-    Layout: UserPreference = UserPreference(preference=None, confidence_score=0.0, weight=0.5)  
-    PropertyType: UserPreference = UserPreference(preference=None, confidence_score=0.0, weight=0.5)
     Features: UserPreference = UserPreference(preference=None, confidence_score=0.0, weight=0.5)
+    Layout: UserPreference = UserPreference(preference=None, confidence_score=0.0, weight=0.5)  
     Condition: UserPreference = UserPreference(preference=None, confidence_score=0.0, weight=0.5)
     Environment: UserPreference = UserPreference(preference=None, confidence_score=0.0, weight=0.5)
     Style: UserPreference = UserPreference(preference=None, confidence_score=0.0, weight=0.5)
     Quality: UserPreference = UserPreference(preference=None, confidence_score=0.0, weight=0.5)
-    Room: UserPreference = UserPreference(preference=None, confidence_score=0.0, weight=0.5)
     SchoolDistrict: UserPreference = UserPreference(preference=None, confidence_score=0.0, weight=0.5)
     Community: UserPreference = UserPreference(preference=None, confidence_score=0.0, weight=0.5)
     Transport: UserPreference = UserPreference(preference=None, confidence_score=0.0, weight=0.5)        
@@ -31,14 +26,16 @@ class UserPreferences(TypedDict):
 
 # Request model for property search
 class PropertySearchRequest(TypedDict):
-    location: Optional[str] = Field(None, description="Location")
-    suburb: Optional[str] = None
-    state: Optional[str] = None
-    postcode: Optional[int] = None
+    location: Optional[List[str]] = Field(None, description="List of locations to search, format: STATE-SUBURB-POSTCODE")
     min_price: Optional[float] = Field(None, description="Minimum price")
     max_price: Optional[float] = Field(None, description="Maximum price")
     min_bedrooms: Optional[int] = Field(None, description="Minimum number of bedrooms")
-    property_type: Optional[str] = Field(None, description="Type of property")
+    min_bathrooms: Optional[int] = Field(None, description="Minimum number of bathrooms")
+    property_type: Optional[List[str]] = Field(None, description="List of property types (house, apartment, unit, townhouse, villa, rural)")
+    car_parks: Optional[int] = Field(None, description="Number of car parks")
+    land_size_from: Optional[float] = Field(None, description="Minimum land size in sqm")
+    land_size_to: Optional[float] = Field(None, description="Maximum land size in sqm")
+    geo_location: Optional[Tuple[float, float]] = Field(None, description="Geographical location as [latitude, longitude]")
 
 # Response model for property search
 class PropertySearchResponse(BaseModel):
