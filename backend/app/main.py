@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 from .services.property_api import PropertyAPI
 from .services.image_processor import ImageProcessor, ImageAnalysisRequest,PropertyAnalysis
 from .services.recommender import PropertyRecommender
-from .models import UserPreferences, PropertySearchRequest, PropertySearchResponse, FirestoreProperty
+from .models import UserPreferences, PropertySearchRequest, PropertySearchResponse, FirestoreProperty, PropertyRecommendationResponse, PropertyWithRecommendation, PropertyRecommendationInfo
 from .llm_service import LLMService
 from pydantic import BaseModel, Field
 from typing import List, Dict, Optional
@@ -124,7 +124,7 @@ async def update_preferences(preferences: UserPreferences):
 async def recommend_properties(
     properties: List[FirestoreProperty], 
     preferences: UserPreferences
-) -> List[FirestoreProperty]:
+) -> PropertyRecommendationResponse:
     """Get property recommendations based on user preferences using LLM analysis"""
     try:
         recommendations = await recommender.get_recommendations(  

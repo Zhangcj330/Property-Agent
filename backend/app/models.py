@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import Optional, List, Dict, Tuple, Any
+from typing import Optional, List, Dict, Tuple, Any, Union
 from typing_extensions import TypedDict
 from datetime import datetime
 
@@ -241,4 +241,23 @@ class FirestoreProperty(BaseModel):
             image_urls=self.media.image_urls,
             agent_name=self.agent.agent_name
         )
+    
+# Model for property recommendation
+class PropertyRecommendationInfo(BaseModel):
+    """Model for recommendation information"""
+    score: float
+    highlights: List[str]
+    concerns: List[str]
+    explanation: str
+    
+# Enhanced property response with recommendation information
+class PropertyWithRecommendation(BaseModel):
+    """Property with recommendation information"""
+    property: FirestoreProperty
+    recommendation: PropertyRecommendationInfo
+
+# Response structure for recommendation endpoint
+class PropertyRecommendationResponse(BaseModel):
+    """Response model for property recommendations"""
+    properties: List[PropertyWithRecommendation]
     

@@ -8,7 +8,7 @@ from fastapi import HTTPException
 
 from app.services.image_processor import ImageProcessor, ImageAnalysisRequest, PropertyAnalysis
 from app.services.recommender import PropertyRecommender, PropertyRecommendation
-from app.models import UserPreferences, FirestoreProperty, PropertyBasicInfo, PropertyMedia, PropertyEvents, PropertyMetadata, AgentInfo
+from app.models import UserPreferences, FirestoreProperty, PropertyBasicInfo, PropertyMedia, PropertyEvents, PropertyMetadata, AgentInfo, PropertyRecommendationResponse, PropertyWithRecommendation, PropertyRecommendationInfo
 
 # Test data fixtures
 
@@ -427,13 +427,10 @@ class TestPropertyRecommender:
         
         # Assert
         assert mock_parser.parse.called
-        assert len(result) == 1
-        assert result[0].listing_id == "prop-001"
-        
-        # Verify recommendation data is attached to properties
-        assert hasattr(result[0], '_recommendation')
-        assert result[0]._recommendation.score == 0.9
-        assert "Good match" in result[0]._recommendation.highlights
+        assert isinstance(result, PropertyRecommendationResponse)
+        assert len(result.properties) == 1
+        assert result.properties[0].property.listing_id == "prop-001"
+        assert result.properties[0].recommendation.score == 0.9
     
     async def test_get_recommendations_with_nested_format(self, mock_chatgpt, properties_for_recommendation, user_preferences):
         """Test recommendations when LLM returns nested format with 'recommendations' field"""
@@ -468,9 +465,10 @@ class TestPropertyRecommender:
         # Assert
         assert mock_parser.parse.called  # Parser should be called but fail
         assert mock_llm.invoke.called
-        assert len(result) == 1
-        assert result[0].listing_id == "prop-001"
-        assert hasattr(result[0], '_recommendation')
+        assert isinstance(result, PropertyRecommendationResponse)
+        assert len(result.properties) == 1
+        assert result.properties[0].property.listing_id == "prop-001"
+        assert result.properties[0].recommendation.score == 0.9
     
     async def test_get_recommendations_with_invalid_items(self, mock_chatgpt, properties_for_recommendation, user_preferences):
         """Test handling of invalid items in recommendations list"""
@@ -502,8 +500,9 @@ class TestPropertyRecommender:
         # Assert
         assert mock_parser.parse.called  # Parser should be called but fail
         assert mock_llm.invoke.called
-        assert len(result) == 1  # Only one valid property recommendation
-        assert result[0].listing_id == "prop-001"
+        assert isinstance(result, PropertyRecommendationResponse)
+        assert len(result.properties) == 1  # Only one valid property recommendation
+        assert result.properties[0].property.listing_id == "prop-001"
     
     async def test_get_recommendations_with_no_properties(self, mock_chatgpt, user_preferences):
         """Test recommendations with empty property list"""
@@ -518,12 +517,13 @@ class TestPropertyRecommender:
             properties=[],
             preferences=user_preferences
         )
-
+        
         # Restore the client
         recommender.client = original_client
         
         # Assert
-        assert result == []
+        assert isinstance(result, PropertyRecommendationResponse)
+        assert len(result.properties) == 0  # No properties
     
     async def test_get_recommendations_error_handling(self, mock_chatgpt, properties_for_recommendation, user_preferences):
         """Test error handling in recommendations"""
@@ -540,8 +540,9 @@ class TestPropertyRecommender:
         )
         
         # Assert - should return original properties in fallback mode
-        assert len(result) == len(properties_for_recommendation)
-        assert result[0].listing_id == "prop-001"
+        assert isinstance(result, PropertyRecommendationResponse)
+        assert len(result.properties) == len(properties_for_recommendation)
+        assert all(prop.recommendation.score == 0.0 for prop in result.properties)  # Default score for error case
     
     async def test_get_recommendations_with_parsing_error(self, mock_chatgpt, properties_for_recommendation, user_preferences):
         """Test handling of parsing errors"""
@@ -558,8 +559,8 @@ class TestPropertyRecommender:
         )
         
         # Assert - should return original properties in fallback mode
-        assert len(result) == len(properties_for_recommendation)
-        assert result[0].listing_id == "prop-001"
+        assert isinstance(result, PropertyRecommendationResponse)
+        assert len(result.properties) == len(properties_for_recommendation)
     
     async def test_get_recommendations_with_limit(self, mock_chatgpt, properties_for_recommendation, user_preferences):
         """Test recommendations with a specific limit"""
@@ -583,8 +584,10 @@ class TestPropertyRecommender:
         
         # Assert
         assert mock_llm.invoke.called
-        assert len(result) == 2  # Limited to 2
-        assert result[0].listing_id == "prop-001"
+        assert isinstance(result, PropertyRecommendationResponse)
+        assert len(result.properties) == 2  # Limited to 2
+        # Verify sorting - highest score should be first
+        assert result.properties[0].recommendation.score >= result.properties[1].recommendation.score
     
     async def test_get_recommendations_with_missing_property(self, mock_chatgpt, properties_for_recommendation, user_preferences):
         """Test recommendations with properties missing from response"""
@@ -609,5 +612,6 @@ class TestPropertyRecommender:
         
         # Assert
         assert mock_llm.invoke.called
-        assert len(result) == 1  # Only 1 property matched
-        assert result[0].listing_id == "prop-001" 
+        assert isinstance(result, PropertyRecommendationResponse)
+        assert len(result.properties) == 1  # Only 1 property matched
+        assert result.properties[0].property.listing_id == "prop-001" 

@@ -3,7 +3,7 @@ from pydantic import BaseModel, Field
 from langchain_community.chat_models import ChatOpenAI
 from langchain_core.output_parsers import JsonOutputParser
 from langchain_core.messages import HumanMessage
-from app.models import UserPreferences, FirestoreProperty
+from app.models import UserPreferences, FirestoreProperty, PropertyRecommendationResponse, PropertyWithRecommendation, PropertyRecommendationInfo
 from app.config import settings
 
 class PropertyRecommendation(BaseModel):
@@ -27,8 +27,8 @@ class PropertyRecommender:
         self,
         properties: List[FirestoreProperty],
         preferences: UserPreferences,
-        limit: int = 1
-    ) -> List[FirestoreProperty]:
+        limit: int = 2
+    ) -> PropertyRecommendationResponse:
         try:
             # Prepare the batch analysis prompt
             properties_summary = []
@@ -112,21 +112,30 @@ class PropertyRecommender:
                     else:
                         # Unknown format, return original properties
                         print(f"Unexpected response format: {response_json}")
-                        return properties[:limit]
+                        return PropertyRecommendationResponse(properties=[])
                         
                 except Exception as json_error:
                     print(f"JSON parsing error: {str(json_error)}")
                     # If all parsing fails, return original properties
-                    return properties[:limit]
+                    return PropertyRecommendationResponse(properties=[])
             
             # Ensure recommendations is a valid list
             if not recommendations:
                 print("No valid recommendations found")
-                return properties[:limit]
+                return PropertyRecommendationResponse(properties=[])
             
             # Create a map of property ids to their recommendation objects
             try:
-                recommendation_map = {rec.property_id: rec for rec in recommendations}
+                recommendation_map = {}
+                for rec in recommendations:
+                    if isinstance(rec, dict) and "property_id" in rec:
+                        # If recommendation is a dict, use it directly
+                        recommendation_map[rec["property_id"]] = PropertyRecommendation(**rec)
+                    elif hasattr(rec, "property_id"):
+                        # If recommendation is already a PropertyRecommendation object
+                        recommendation_map[rec.property_id] = rec
+                    else:
+                        print(f"Skipping invalid recommendation format: {rec}")
                 
                 # Match original property objects with their recommendations
                 recommended_properties = []
@@ -139,20 +148,65 @@ class PropertyRecommender:
                 # If no properties matched with recommendations, return original properties
                 if not recommended_properties:
                     print("No properties matched with recommendations")
-                    return properties[:limit]
+                    return PropertyRecommendationResponse(properties=[])
                 
                 # Sort by score (descending)
-                recommended_properties.sort(
-                    key=lambda x: getattr(getattr(x, '_recommendation', None), 'score', 0) if hasattr(x, '_recommendation') else 0,
-                    reverse=True
-                )
+                recommended_properties.sort(key=lambda x: x._recommendation.score, reverse=True)
                 
-                return recommended_properties[:limit]
+                for prop in recommended_properties:
+                    print(f"Property {prop.listing_id}: score={prop._recommendation.score}")
+                
+                print("Sorted properties:", [f"{p.listing_id}:{p._recommendation.score}" for p in recommended_properties[:limit]])
+                
+                # Transform to the new response format
+                response_properties = []
+                for prop in recommended_properties[:limit]:
+                    rec = prop._recommendation
+                    response_properties.append(
+                        PropertyWithRecommendation(
+                            property=prop,
+                            recommendation=PropertyRecommendationInfo(
+                                score=rec.score,
+                                highlights=rec.highlights,
+                                concerns=rec.concerns,
+                                explanation=rec.explanation
+                            )
+                        )
+                    )
+                
+                return PropertyRecommendationResponse(properties=response_properties)
             except Exception as matching_error:
                 print(f"Error matching properties with recommendations: {str(matching_error)}")
-                return properties[:limit]
+                # Return original properties in the new format without recommendations
+                response_properties = []
+                for prop in properties[:limit]:
+                    response_properties.append(
+                        PropertyWithRecommendation(
+                            property=prop,
+                            recommendation=PropertyRecommendationInfo(
+                                score=0.0, 
+                                highlights=["No recommendation available"],
+                                concerns=["Unable to analyze property"],
+                                explanation="An error occurred during recommendation processing"
+                            )
+                        )
+                    )
+                return PropertyRecommendationResponse(properties=response_properties)
             
         except Exception as e:
             print(f"Error in recommendation process: {str(e)}")
-            # Return original properties if analysis fails
-            return properties[:limit] 
+            # Return original properties in the new format without recommendations
+            response_properties = []
+            for prop in properties[:limit]:
+                response_properties.append(
+                    PropertyWithRecommendation(
+                        property=prop,
+                        recommendation=PropertyRecommendationInfo(
+                            score=0.0, 
+                            highlights=["No recommendation available"],
+                            concerns=["Unable to analyze property"],
+                            explanation="An error occurred during recommendation processing"
+                        )
+                    )
+                )
+            return PropertyRecommendationResponse(properties=response_properties) 
