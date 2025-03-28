@@ -1,4 +1,5 @@
 from fastapi import FastAPI, Depends, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from .services.property_api import PropertyAPI
 from .services.image_processor import ImageProcessor, ImageAnalysisRequest,PropertyAnalysis
@@ -9,8 +10,23 @@ from pydantic import BaseModel, Field
 from typing import List, Dict, Optional
 from .services.property_scraper import PropertyScraper
 from .services.firestore_service import FirestoreService
+import uuid
+import logging
+
+# 配置日志
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 app = FastAPI()
+
+# Configure CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # 允许所有源 - 生产环境中应该限制为特定域名
+    allow_credentials=True,
+    allow_methods=["*"],  # 允许所有HTTP方法
+    allow_headers=["*"],  # 允许所有头部
+)
 
 # Initialize services
 # property_api = PropertyAPI(settings.DOMAIN_API_KEY)
@@ -25,88 +41,116 @@ llm_service = LLMService()
 firestore_service = FirestoreService()
 
 class ChatInput(BaseModel):
+    session_id: Optional[str] = None  # 确保默认值为 None
     user_input: str
+    preferences: Optional[Dict] = {}  # 设置默认空字典
+    search_params: Optional[Dict] = {}  # 设置默认空字典
+
+class ChatResponse(BaseModel):
+    """Response model for chat endpoint"""
+    session_id: str
+    response: str
     preferences: Optional[Dict] = None
     search_params: Optional[Dict] = None
+    is_complete: bool = False
+
+class PropertyRecommendationRequest(BaseModel):
+    """Request model for property recommendations based on state"""
+    preferences: Dict
+    search_params: Dict
 
 # API Routers
 # v1 API endpoints
 v1_prefix = "/api/v1"
 
-@app.post(f"{v1_prefix}/chat", tags=["Chat"])
+@app.post(f"{v1_prefix}/chat", tags=["Chat"], response_model=ChatResponse)
 async def chat_endpoint(chat_input: ChatInput):
-    """Handle chat messages and preference updates"""
-    print(chat_input)
-    final_state = await llm_service.process_user_input(
-        chat_input.user_input,
-        chat_input.preferences,
-        chat_input.search_params
-    )
+    """处理聊天消息并返回 AI 状态"""
+    try:
+        logger.info(f"Received chat input: {chat_input}")
+        
+        # 确保 session_id 为 None 或字符串
+        session_id = chat_input.session_id if chat_input.session_id else str(uuid.uuid4())
+        logger.info(f"Using session_id: {session_id}")
+        
+        # 确保 preferences 和 search_params 是字典
+        preferences = chat_input.preferences or {}
+        search_params = chat_input.search_params or {}
+        
+        logger.info(f"Processing user input with session_id: {session_id}")
+        final_state = await llm_service.process_user_input(
+            session_id=session_id,
+            user_input=chat_input.user_input,
+            preferences=preferences,
+            search_params=search_params
+        )
+        logger.info("Successfully processed user input")
+        
+        # 构建响应
+        response = ChatResponse(
+            session_id=session_id,
+            response=final_state["messages"][-1].content if final_state["messages"] else "",
+            preferences=final_state["userpreferences"],
+            search_params=final_state["propertysearchrequest"],
+            is_complete=final_state.get("is_complete", False)
+        )
+        logger.info(f"Returning response: {response}")
+        return response
+        
+    except Exception as e:
+        logger.error(f"Error in chat_endpoint: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"An error occurred while processing your request: {str(e)}"
+        )
 
-    # Extract response message content, handling both dict and object formats
-    response_message = ""
-    if final_state["messages"]:
-        last_message = final_state["messages"][-1]
-        if isinstance(last_message, dict) and "content" in last_message:
-            response_message = last_message["content"]
-        elif hasattr(last_message, "content"):
-            response_message = last_message.content
+@app.post(f"{v1_prefix}/chat/recommend", tags=["Chat"], response_model=PropertyRecommendationResponse)
+async def chat_recommendation_endpoint(request: PropertyRecommendationRequest):
+    """Get property recommendations based on chat state"""
+    try:
+        # Search for properties based on the search parameters
+        property_results = await search_properties(request.search_params)
+        
+        if not property_results:
+            return PropertyRecommendationResponse(properties=[])
 
-    response_data = {
-        "response": response_message,
-        "preferences": final_state["userpreferences"] if final_state["userpreferences"] else None,
-        "search_params": final_state["propertysearchrequest"] if final_state["propertysearchrequest"] else None
-    }
+        analyzed_properties: List[FirestoreProperty] = []
+        
+        for property in property_results:
+            # Get or create property with analysis
+            stored_property = await firestore_service.get_property(property.listing_id)
+            
+            if stored_property and stored_property.analysis:
+                analyzed_properties.append(stored_property)
+            elif property.image_urls:
+                # Create new analysis
+                image_analysis = await process_image(
+                    ImageAnalysisRequest(image_urls=property.image_urls)
+                )
+                # Save property and update with analysis
+                await firestore_service.save_property(property)
+                await firestore_service.update_property_analysis(
+                    property.listing_id, 
+                    image_analysis
+                )
+                # Get the updated property with analysis
+                analyzed_property = await firestore_service.get_property(property.listing_id)
+                if analyzed_property:
+                    analyzed_properties.append(analyzed_property)
 
-    # If we have search parameters, trigger the property search flow
-    if final_state.get("is_complete") :
-        print("Search parameters found, triggering property search flow")
-        try:
-            # 1. Search for properties
-            property_results = await search_properties(final_state["propertysearchrequest"])
+        # Get recommendations based on preferences and enriched properties
+        if request.preferences and analyzed_properties:
+            recommendations = await recommend_properties(
+                properties=analyzed_properties,
+                preferences=request.preferences
+            )
+            return recommendations
+        
+        return PropertyRecommendationResponse(properties=[])
 
-            if property_results:
-                analyzed_properties: List[FirestoreProperty] = []
-                
-                for property in property_results:
-                    # Get or create property with analysis
-                    stored_property = await firestore_service.get_property(property.listing_id)
-                    
-                    if stored_property and stored_property.analysis:
-                        analyzed_properties.append(stored_property)
-                    elif property.image_urls:
-                    # Create new analysis
-                        image_analysis = await process_image(
-                            ImageAnalysisRequest(image_urls=property.image_urls)
-                        )
-                        # Save property and update with analysis
-                        await firestore_service.save_property(property)
-                        await firestore_service.update_property_analysis(
-                            property.listing_id, 
-                            image_analysis
-                        )
-                        # Get the updated property with analysis
-                        analyzed_property = await firestore_service.get_property(property.listing_id)
-                        if analyzed_property:
-                            analyzed_properties.append(analyzed_property)
-
-                # 3. Get recommendations based on preferences and enriched properties
-                if final_state.get("userpreferences") and analyzed_properties:
-                    recommendations = await recommend_properties(
-                        properties=analyzed_properties,
-                        preferences=final_state["userpreferences"]
-                    )
-                    print("Recommendations: ", recommendations)
-                    response_data["recommendations"] = recommendations
-
-                response_data["properties"] = analyzed_properties
-
-        except Exception as e:
-            print(f"Error in property search flow: {str(e)}")
-            # Don't raise exception, just continue with chat response
-            pass
-
-    return response_data
+    except Exception as e:
+        print(f"Error in recommendation process: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post(f"{v1_prefix}/preferences", tags=["Preferences"])
 async def update_preferences(preferences: UserPreferences):

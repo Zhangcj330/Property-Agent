@@ -12,7 +12,8 @@ from langchain_core.output_parsers import JsonOutputParser
 from langgraph.graph import StateGraph, MessagesState, START, END
 from app.config import settings
 from app.services.property_scraper import PropertyScraper
-from app.models import UserPreferences, PropertySearchRequest
+from app.models import UserPreferences, PropertySearchRequest, ChatMessage
+from app.services.chat_storage import ChatStorageService
 
 # Graph state
 class State(TypedDict):
@@ -50,6 +51,7 @@ def PreferenceGraph():
         chat_history = state["chat_history"]
         current_preferences = state["userpreferences"]
         current_search_params = state["propertysearchrequest"]
+        current_message = state["messages"][0].content if state["messages"] else None  # 获取当前用户输入
         
         print(f"Starting extract_worker with current_search_params: {current_search_params}")
         
@@ -163,11 +165,15 @@ def PreferenceGraph():
             "search_parameters": {only search parameters that need updating}
         }
         """
-        
+
         # Build conversation context with emphasis on recent exchanges
         conversation = "\nRecent Conversation:\n"
         for msg in recent_history:
             conversation += f"{msg['role'].title()}: {msg['content']}\n"
+        
+        # 添加当前用户输入
+        if current_message:
+            conversation += f"User: {current_message}\n"
         
         # Add the preference summary to the context
         context_with_memory = f"{preference_summary}\n\n{conversation}"
@@ -361,10 +367,11 @@ def PreferenceGraph():
     def ambiguity_worker(state: State) -> State:
         """Identify and resolve ambiguities in user preferences and search parameters"""
         chat_history = state.get("chat_history", [])
+        current_message = state["messages"][0].content if state["messages"] else None
         
-        if not chat_history:
+        if not chat_history and not current_message:
             return state
-            
+        
         try:
             ambiguity_prompt = """You are an expert Australian Real Estate Advisor specializing in identifying conflicting requirements and ambiguities in client preferences.
             give subjective recommendations and suggestions for the user based on your knowledge of the market when you find users fail to clarify their preferences more clearly.
@@ -425,6 +432,10 @@ def PreferenceGraph():
             for msg in chat_history:
                 conversation += f"{msg['role'].title()}: {msg['content']}\n"
             
+            # 添加当前用户输入
+            if current_message:
+                conversation += f"User: {current_message}\n"
+            
             # Get ambiguity analysis from LLM
             response = llm.invoke([
                 SystemMessage(content=ambiguity_prompt),
@@ -450,10 +461,6 @@ def PreferenceGraph():
             # Store ambiguity information in state
             state["has_ambiguities"] = has_high_importance_ambiguities
             state["ambiguities"] = high_importance_ambiguities
-            
-            # print(f"Ambiguity check result: has_ambiguities={state['has_ambiguities']}")
-            # if state["has_ambiguities"]:
-            #     print(f"Found high importance ambiguities: {state['ambiguities']}")
             
         except Exception as e:
             print(f"Error in ambiguity_worker: {e}")
@@ -536,31 +543,54 @@ def PreferenceGraph():
 class LLMService:
     def __init__(self):
         self.graph = PreferenceGraph()
-        self.chat_history = []  # Initialize chat history
-        self.property_scraper = PropertyScraper()  # Initialize property scraper
+        self.chat_storage = ChatStorageService()
     
-    async def process_user_input(self, user_input: str, preferences: Dict = None, search_params: Dict = None) -> Tuple[str, Dict]:
-        """Process user input through the graph"""
-        # Add user message to chat history
-        self.chat_history.append({"role": "user", "content": user_input})
+    async def process_user_input(
+        self, 
+        session_id: str, 
+        user_input: str, 
+        preferences: Dict = None, 
+        search_params: Dict = None
+    ) -> Dict:
+        """处理用户输入，维护对话历史"""
+        # 获取或创建会话
+        session = await self.chat_storage.get_session(session_id)
+        if not session:
+            session = await self.chat_storage.create_session(session_id)  # 传入 session_id
+            
+        # 保存用户消息
+        user_message = ChatMessage(
+            role="user",
+            content=user_input
+        )
+        await self.chat_storage.save_message(session.session_id, user_message)
         
-        # Initialize state with chat history
+        # 准备状态
         state = State(
             messages=[HumanMessage(content=user_input)],
-            userpreferences=preferences or UserPreferences(),
-            propertysearchrequest=search_params or PropertySearchRequest(),
+            userpreferences=preferences or session.preferences or {},
+            propertysearchrequest=search_params or session.search_params or {},
             current_missing_field=None,
             is_complete=False,
-            chat_history=self.chat_history
+            chat_history=[msg.model_dump() for msg in session.messages]  # 使用完整的会话历史
         )
         
-        # Run the graph
+        # 运行对话图
         final_state = self.graph.invoke(state)
-        # print("Final state:", final_state)
         
-        # If we have complete preferences, search for properties
-        if not final_state["is_complete"]:
-            last_message = final_state["messages"][-1].content if final_state["messages"] else ""
-            self.chat_history.append({"role": "assistant", "content": last_message})
+        # 如果有新的回复，保存助手消息
+        if final_state["messages"]:
+            assistant_message = ChatMessage(
+                role="assistant",
+                content=final_state["messages"][-1].content
+            )
+            await self.chat_storage.save_message(session.session_id, assistant_message)
+        
+        # 更新会话状态
+        await self.chat_storage.update_session_state(
+            session_id=session.session_id,
+            preferences=final_state["userpreferences"],
+            search_params=final_state["propertysearchrequest"]
+        )
         
         return final_state

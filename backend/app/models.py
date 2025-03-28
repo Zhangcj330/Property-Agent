@@ -260,4 +260,19 @@ class PropertyWithRecommendation(BaseModel):
 class PropertyRecommendationResponse(BaseModel):
     """Response model for property recommendations"""
     properties: List[PropertyWithRecommendation]
+
+class ChatMessage(BaseModel):
+    """单条聊天消息模型"""
+    role: str = Field(..., description="消息角色：'user' 或 'assistant'")
+    content: str = Field(..., description="消息内容")
+    timestamp: datetime = Field(default_factory=datetime.now)
+
+class ChatSession(BaseModel):
+    """聊天会话模型"""
+    session_id: str = Field(..., description="会话唯一标识符")
+    messages: List[ChatMessage] = Field(default_factory=list, description="会话中的所有消息")
+    created_at: datetime = Field(default_factory=datetime.now)
+    last_active: datetime = Field(default_factory=datetime.now)
+    preferences: Optional[Dict] = Field(default=None, description="用户偏好")
+    search_params: Optional[Dict] = Field(default=None, description="搜索参数")
     
