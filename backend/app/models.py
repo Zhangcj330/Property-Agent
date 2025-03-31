@@ -35,7 +35,7 @@ class PropertySearchRequest(TypedDict):
     car_parks: Optional[int] = Field(None, description="Number of car parks")
     land_size_from: Optional[float] = Field(None, description="Minimum land size in sqm")
     land_size_to: Optional[float] = Field(None, description="Maximum land size in sqm")
-    geo_location: Optional[Tuple[float, float]] = Field(None, description="Geographical location as [latitude, longitude]")
+    # geo_location: Optional[Tuple[float, float]] = Field(None, description="Geographical location as [latitude, longitude]")
 
 # Response model for property search
 class PropertySearchResponse(BaseModel):

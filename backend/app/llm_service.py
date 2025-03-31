@@ -45,13 +45,15 @@ def PreferenceGraph():
     # Worker: Extract preferences
     def extract_worker(state: State) -> State:
         """Extract search parameters and preferences from user input"""
-        if "chat_history" not in state or len(state["chat_history"]) == 0:
+        current_message = state["messages"][0].content if state["messages"] else None
+        
+        # If no current message, return state
+        if not current_message:
             return state
-            
-        chat_history = state["chat_history"]
+        
+        chat_history = state.get("chat_history", [])
         current_preferences = state["userpreferences"]
         current_search_params = state["propertysearchrequest"]
-        current_message = state["messages"][0].content if state["messages"] else None  # 获取当前用户输入
         
         print(f"Starting extract_worker with current_search_params: {current_search_params}")
         
@@ -171,9 +173,8 @@ def PreferenceGraph():
         for msg in recent_history:
             conversation += f"{msg['role'].title()}: {msg['content']}\n"
         
-        # 添加当前用户输入
-        if current_message:
-            conversation += f"User: {current_message}\n"
+        # Always add current message to ensure it's processed
+        conversation += f"User: {current_message}\n"
         
         # Add the preference summary to the context
         context_with_memory = f"{preference_summary}\n\n{conversation}"
@@ -449,18 +450,26 @@ def PreferenceGraph():
             parser = JsonOutputParser()
             analysis = parser.invoke(response)
             
-            # Filter ambiguities to only include high importance ones
-            high_importance_ambiguities = [
+            # Filter ambiguities to include both high and medium importance ones
+            important_ambiguities = [
                 ambiguity for ambiguity in analysis.get("ambiguities", [])
-                if ambiguity.get("importance") == "high"
+                if ambiguity.get("importance") in ["high", "medium"]
             ]
             
+            # For first message, don't block on ambiguities unless they're high importance
+            is_first_message = len(chat_history) <= 1
+            if is_first_message:
+                important_ambiguities = [
+                    ambiguity for ambiguity in important_ambiguities
+                    if ambiguity.get("importance") == "high"
+                ]
+            
             # Update has_ambiguities flag based on filtered list
-            has_high_importance_ambiguities = len(high_importance_ambiguities) > 0
+            has_important_ambiguities = len(important_ambiguities) > 0
             
             # Store ambiguity information in state
-            state["has_ambiguities"] = has_high_importance_ambiguities
-            state["ambiguities"] = high_importance_ambiguities
+            state["has_ambiguities"] = has_important_ambiguities
+            state["ambiguities"] = important_ambiguities
             
         except Exception as e:
             print(f"Error in ambiguity_worker: {e}")

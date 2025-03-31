@@ -5,7 +5,7 @@ from langchain_core.messages import HumanMessage
 
 # Import your agent and models
 from app.models import PropertySearchResponse, UserPreferences, UserPreference, FirestoreProperty
-from app.PorpertyAgent.agent import agent, search_properties, analyze_property_images, get_property_recommendations
+from app.Agent.agent import agent, search_properties, analyze_property_images, get_property_recommendations
 from app.services.image_processor import PropertyAnalysis
 
 # Detailed mock property data provided

@@ -52,80 +52,87 @@ class TestPreferenceExtraction:
             final_state: The final state after the conversation
             turns_taken: Number of conversation turns that occurred
         """
+        # Generate a unique session ID for this conversation
+        session_id = f"test_session_{time.time()}"
+        
         # Process initial query
         print(f"\n初始查询: {initial_query}")
-        state = await llm_service.process_user_input(initial_query)
+        state = await llm_service.process_user_input(
+            session_id=session_id,
+            user_input=initial_query
+        )
         turns_taken = 1
         
         # Save current state, so it can be passed to the next turn
         current_preferences = state.get("userpreferences", {})
         current_search_params = state.get("propertysearchrequest", {})
+        chat_history = state.get("chat_history", [])
         
         # Process the user response
         print(f"\n处理用户回复...")
-        assistant_message = llm_service.chat_history[-1]["content"]
-        print(f"\n对话轮次 {turns_taken}:")
-        print(f"房产顾问: {assistant_message}")
-        print(f"用户: {initial_query}")
-        print(f"模糊字段: {state.get('ambiguities', [])}")
-        print(f"用户偏好: {state.get('userpreferences', {})}")
-        print(f"搜索参数: {state.get('propertysearchrequest', {})}")
-        print(f"缺失字段: {state.get('current_missing_field')}")
-        print(f"是否完成: {state.get('is_complete', False)}")
-        print("---")
-        
-        # Continue conversation until complete or max turns reached
-        while not state.get("is_complete", False) and turns_taken < max_turns:
-            # If there's no assistant message, break
-            if not llm_service.chat_history or llm_service.chat_history[-1]["role"] != "assistant":
-                break
-                
-            # Get the last assistant message
-            assistant_message = llm_service.chat_history[-1]["content"]
-            
-            # Add delay between turns to simulate real conversation and avoid rate limits
-            print(f"\n等待 {delay_seconds} 秒...")
-            time.sleep(delay_seconds)
-            
-            # Generate user response based on persona and assistant message
-            print(f"\n生成用户回复...")
-            user_response = mock_user_llm.invoke([
-                SystemMessage(content=f"""You are simulating a real estate buyer with the following persona:
-                {user_persona}
-                
-                Respond naturally to the real estate agent's question below. Stay in character and provide information
-                that aligns with your persona. Be conversational and realistic - don't be too direct or perfect in your answers.
-                Sometimes be a bit vague or mention contradictory preferences as real humans do.
-                
-                If asked about specific details like price range, location, or property features, provide an answer
-                that matches your persona's preferences, even if it's somewhat vague or contradictory.
-                
-                Don't mention that you're an AI or that this is a simulation."""),
-                HumanMessage(content=f"Real estate agent: {assistant_message}")
-            ])
-            
-            # Use saved state to process user response
-            state = await llm_service.process_user_input(
-                user_response.content,
-                preferences=current_preferences,
-                search_params=current_search_params
-            )
-            
-            # Update saved state
-            current_preferences = state.get("userpreferences", {})
-            current_search_params = state.get("propertysearchrequest", {})
-            
-            turns_taken += 1
-            
+        if chat_history:
+            assistant_message = chat_history[-1]["content"]
             print(f"\n对话轮次 {turns_taken}:")
             print(f"房产顾问: {assistant_message}")
-            print(f"用户: {user_response.content}")
+            print(f"用户: {initial_query}")
             print(f"模糊字段: {state.get('ambiguities', [])}")
             print(f"用户偏好: {state.get('userpreferences', {})}")
             print(f"搜索参数: {state.get('propertysearchrequest', {})}")
             print(f"缺失字段: {state.get('current_missing_field')}")
             print(f"是否完成: {state.get('is_complete', False)}")
             print("---")
+            
+            # Continue conversation until complete or max turns reached
+            while not state.get("is_complete", False) and turns_taken < max_turns:
+                # Get the last assistant message
+                assistant_message = chat_history[-1]["content"]
+                
+                # Add delay between turns
+                print(f"\n等待 {delay_seconds} 秒...")
+                time.sleep(delay_seconds)
+                
+                # Generate user response based on persona and assistant message
+                print(f"\n生成用户回复...")
+                user_response = mock_user_llm.invoke([
+                    SystemMessage(content=f"""You are simulating a real estate buyer with the following persona:
+                    {user_persona}
+                    
+                    Respond naturally to the real estate agent's question below. Stay in character and provide information
+                    that aligns with your persona. Be conversational and realistic - don't be too direct or perfect in your answers.
+                    Sometimes be a bit vague or mention contradictory preferences as real humans do.
+                    
+                    If asked about specific details like price range, location, or property features, provide an answer
+                    that matches your persona's preferences, even if it's somewhat vague or contradictory.
+                    
+                    Don't mention that you're an AI or that this is a simulation."""),
+                    HumanMessage(content=f"Real estate agent: {assistant_message}")
+                ])
+                
+                # Process the user response
+                print(f"\n处理用户回复...")
+                state = await llm_service.process_user_input(
+                    session_id=session_id,
+                    user_input=user_response.content,
+                    preferences=current_preferences,
+                    search_params=current_search_params
+                )
+                
+                # Update saved state
+                current_preferences = state.get("userpreferences", {})
+                current_search_params = state.get("propertysearchrequest", {})
+                chat_history = state.get("chat_history", [])
+                
+                turns_taken += 1
+                
+                print(f"\n对话轮次 {turns_taken}:")
+                print(f"房产顾问: {assistant_message}")
+                print(f"用户: {user_response.content}")
+                print(f"模糊字段: {state.get('ambiguities', [])}")
+                print(f"用户偏好: {state.get('userpreferences', {})}")
+                print(f"搜索参数: {state.get('propertysearchrequest', {})}")
+                print(f"缺失字段: {state.get('current_missing_field')}")
+                print(f"是否完成: {state.get('is_complete', False)}")
+                print("---")
                 
         return state, turns_taken
     
@@ -383,7 +390,10 @@ class TestPreferenceExtraction:
         async def simulate_with_ambiguities(turns_to_force=4):
             # Process initial query
             print(f"\n初始查询: {initial_query}")
-            state = await llm_service.process_user_input(initial_query)
+            state = await llm_service.process_user_input(
+                session_id=f"test_session_{time.time()}",
+                user_input=initial_query
+            )
             
             # Force ambiguity for the first turn
             if "ambiguities" not in state or not state["ambiguities"]:
@@ -443,7 +453,8 @@ class TestPreferenceExtraction:
                 # Process the user response
                 print(f"\n处理用户回复...")
                 state = await llm_service.process_user_input(
-                    user_response.content,
+                    session_id=f"test_session_{time.time()}",
+                    user_input=user_response.content,
                     preferences=state.get("userpreferences", {}),
                     search_params=state.get("propertysearchrequest", {})
                 )
