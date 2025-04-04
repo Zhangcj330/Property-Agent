@@ -22,6 +22,8 @@ def init_session_state():
         }
     if 'preferences' not in st.session_state:
         st.session_state.preferences = {}
+    if 'session_id' not in st.session_state:
+        st.session_state.session_id = None
 
 
 def display_property_in_chat(property: Dict):
@@ -164,9 +166,10 @@ def process_chat_message(message: str):
     try:
         # Send both message and current preferences to backend
         response = requests.post(
-            f"{BACKEND_URL}/{v1_prefix}/chat",
+            f"{BACKEND_URL}/{v1_prefix}/agent/chat",
             json={
                 "user_input": message,
+                "session_id": st.session_state.get("session_id"),
                 "preferences": st.session_state.preferences,
                 "search_params": st.session_state.search_params
             }
@@ -174,6 +177,11 @@ def process_chat_message(message: str):
         
         if response.status_code == 200:
             chat_response = response.json()
+            
+            # Store session_id for future requests
+            if chat_response.get("session_id"):
+                st.session_state.session_id = chat_response["session_id"]
+            
             # Update preferences with any new information
             if chat_response.get("preferences"):
                 st.session_state.preferences.update(chat_response["preferences"])
@@ -184,6 +192,7 @@ def process_chat_message(message: str):
             # Add a visual indicator that preferences were updated
             if (chat_response.get("preferences") or chat_response.get("search_params")):
                 st.sidebar.success("✅ Your preferences have been updated!")
+            
             if chat_response.get("recommendations"):
                 return chat_response["recommendations"]
             else:

@@ -8,6 +8,8 @@ from fake_useragent import UserAgent
 import logging
 import re
 from app.models import PropertySearchRequest, PropertySearchResponse
+import aiohttp
+import asyncio
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -111,14 +113,21 @@ class PropertyScraper:
         print(f"Final URL: {search_url}")
         return search_url
         
-    def _get_page(self, url: str) -> Optional[str]:
-        """Make HTTP request with error handling"""
+    async def _get_page(self, url: str) -> Optional[str]:
+        """Make async HTTP request with error handling"""
         try:
             # Random delay between requests (1-3 seconds)
-            time.sleep(random.uniform(1, 3))
-            response = requests.get(url, headers=self.headers)
-            response.raise_for_status()
-            return response.text
+            await asyncio.sleep(random.uniform(1, 3))
+            
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, headers=self.headers, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                    if response.status == 200:
+                        return await response.text()
+                    response.raise_for_status()
+            
+        except asyncio.TimeoutError:
+            logger.error(f"Timeout fetching {url}")
+            return None
         except Exception as e:
             logger.error(f"Error fetching {url}: {str(e)}")
             return None
@@ -205,11 +214,8 @@ class PropertyScraper:
             # Log search parameters for debugging
             logger.debug(f"Search parameters: {search_params}")
             
-            # For debugging
-            import pdb; pdb.set_trace()
-            
             # Get search results page
-            html = self._get_page(search_url)
+            html = await self._get_page(search_url)
             if not html:
                 logger.error("Failed to fetch search results page")
                 return []

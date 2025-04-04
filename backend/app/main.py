@@ -10,6 +10,11 @@ from pydantic import BaseModel, Field
 from typing import List, Dict, Optional
 from .services.property_scraper import PropertyScraper
 from .services.firestore_service import FirestoreService
+from langchain_core.messages import SystemMessage, HumanMessage, AIMessage, ChatMessage
+from .Agent.agent import get_session_state, agent
+from .services.chat_storage import ChatStorageService
+from datetime import datetime
+
 import uuid
 import logging
 
@@ -42,7 +47,7 @@ firestore_service = FirestoreService()
 
 class ChatInput(BaseModel):
     session_id: Optional[str] = None  # 确保默认值为 None
-    user_input: str
+    user_input: str = Field(..., min_length=1)  # 确保用户输入不为空
     preferences: Optional[Dict] = {}  # 设置默认空字典
     search_params: Optional[Dict] = {}  # 设置默认空字典
 
@@ -245,4 +250,65 @@ async def search_properties(search_params: PropertySearchRequest) -> List[Proper
         raise HTTPException(
             status_code=500,
             detail=f"Error searching properties: {str(e)}"
+        )
+
+@app.post(f"{v1_prefix}/agent/chat", tags=["Agent"], response_model=ChatResponse)
+async def agent_chat_endpoint(chat_input: ChatInput):
+    """Process chat messages using the LangGraph agent"""
+    try:
+        logger.info(f"Received agent chat input: {chat_input}")
+        
+        # Ensure session_id exists
+        session_id = chat_input.session_id if chat_input.session_id else str(uuid.uuid4())
+        logger.info(f"Using agent session_id: {session_id}")
+        # Ensure session exists
+        chat_storage = ChatStorageService()
+
+        session = await chat_storage.get_session(session_id)
+        if not session:
+            session = await chat_storage.create_session(session_id)
+        
+        # Initialize the state with the user's message
+        initial_state = {
+            "messages": [HumanMessage(content=chat_input.user_input)],
+            "session_id": session_id,
+            "preferences": chat_input.preferences or {},
+            "search_params": chat_input.search_params or {}
+        }
+
+        # Run the agent
+        final_state = await agent.ainvoke(initial_state)
+        logger.info("Successfully processed input through agent")
+        
+        if final_state["messages"]:
+            assistant_message = ChatMessage(
+                role="assistant",
+                content=final_state["messages"][-1].content,
+                timestamp=datetime.now()
+            )
+            await chat_storage.save_message(session_id, assistant_message)
+        
+        # Extract the last message and any updated state
+        last_message = final_state["messages"][-1].content if final_state["messages"] else ""
+        
+        # Get current session state using ainvoke
+        session_state = await get_session_state.ainvoke(session_id)
+        
+        # Construct response
+        response = ChatResponse(
+            session_id=session_id,
+            response=last_message,
+            preferences=session_state.get("preferences", {}),
+            search_params=session_state.get("search_params", {}),
+            is_complete=True if final_state["messages"][-1].type == "ai" else False
+        )
+        
+        logger.info(f"Returning agent response: {response}")
+        return response
+        
+    except Exception as e:
+        logger.error(f"Error in agent_chat_endpoint: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"An error occurred while processing your request: {str(e)}"
         )

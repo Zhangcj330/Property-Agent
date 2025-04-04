@@ -6,23 +6,20 @@ from datetime import datetime
 class UserPreference(TypedDict):
     """User preference for property search"""
     preference: Optional[str]
-    confidence_score: float 
-    weight: float 
+    importance: float 
 
 class UserPreferences(TypedDict):
     """User preferences for property search
-    The first element is the preference value, the second is the confidence score, the third is the weight
+    The first element is the preference value, the second is the importance
     """
-    Features: UserPreference = UserPreference(preference=None, confidence_score=0.0, weight=0.5)
-    Layout: UserPreference = UserPreference(preference=None, confidence_score=0.0, weight=0.5)  
-    Condition: UserPreference = UserPreference(preference=None, confidence_score=0.0, weight=0.5)
-    Environment: UserPreference = UserPreference(preference=None, confidence_score=0.0, weight=0.5)
-    Style: UserPreference = UserPreference(preference=None, confidence_score=0.0, weight=0.5)
-    Quality: UserPreference = UserPreference(preference=None, confidence_score=0.0, weight=0.5)
-    SchoolDistrict: UserPreference = UserPreference(preference=None, confidence_score=0.0, weight=0.5)
-    Community: UserPreference = UserPreference(preference=None, confidence_score=0.0, weight=0.5)
-    Transport: UserPreference = UserPreference(preference=None, confidence_score=0.0, weight=0.5)        
-    Other: UserPreference = UserPreference(preference=None, confidence_score=0.0, weight=0.5)
+    Features: UserPreference = UserPreference(preference=None, importance=0.5)
+    Style: UserPreference = UserPreference(preference=None, importance=0.5)
+    Condition: UserPreference = UserPreference(preference=None, importance=0.5)
+    Environment: UserPreference = UserPreference(preference=None, importance=0.5)
+    SchoolDistrict: UserPreference = UserPreference(preference=None, importance=0.5)
+    Community: UserPreference = UserPreference(preference=None, importance=0.5)
+    Transport: UserPreference = UserPreference(preference=None, importance=0.5)        
+    Other: UserPreference = UserPreference(preference=None, importance=0.5)
 
 # Request model for property search
 class PropertySearchRequest(TypedDict):
@@ -73,31 +70,22 @@ class PropertyBasicInfo(BaseModel):
 class PropertyMedia(BaseModel):
     """Property media information"""
     image_urls: Optional[List[str]] = None
-    main_image_url: Optional[str] = None
-    video_url: Optional[str] = None
 
 class AgentInfo(BaseModel):
     """Agent information"""
     agent_name: Optional[str] = None
-    agency: Optional[str] = None
-    contact_number: Optional[str] = None
-    email: Optional[str] = None
 
 class PropertyMetadata(BaseModel):
     """Property metadata"""
     created_at: datetime = Field(default_factory=datetime.now)
     updated_at: datetime = Field(default_factory=datetime.now)
-    last_analysis_at: Optional[datetime] = None
     source: Optional[str] = "scraper"
     status: Optional[str] = "active"  # active, sold, withdrawn, etc.
 
 class PropertyEvents(BaseModel):
     """Property events and important dates"""
     inspection_date: Optional[str] = None
-    inspection_times: Optional[List[str]] = None
     auction_date: Optional[str] = None
-    listing_date: Optional[str] = None
-    last_updated_date: Optional[str] = None
 
 # Firestore optimized property model with modular structure
 class FirestoreProperty(BaseModel):
@@ -106,7 +94,7 @@ class FirestoreProperty(BaseModel):
     listing_id: str
     
     # Structured property information
-    basic_info: PropertyBasicInfo
+    basic_info: PropertyBasicInfo = Field(default_factory=PropertyBasicInfo)
     media: PropertyMedia = Field(default_factory=PropertyMedia)
     agent: AgentInfo = Field(default_factory=AgentInfo)
     events: PropertyEvents = Field(default_factory=PropertyEvents)
