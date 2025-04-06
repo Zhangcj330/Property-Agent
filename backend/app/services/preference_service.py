@@ -34,7 +34,7 @@ class PreferenceService:
         self.llm = ChatGoogleGenerativeAI(
             api_key=settings.GEMINI_API_KEY,
             base_url=settings.BASE_URL,
-            model="gemini-1.5-flash",
+            model="gemini-2.0-flash",
             temperature=0.1,
             max_output_tokens=2048
         )
@@ -289,6 +289,7 @@ Key Analysis Areas:
    - Location: Area and position preferences
    - Schools: Educational facility access
    - Community: Neighborhood characteristics
+   - Investment: Investment potential and return on investment
 
 Current Known Information:
 {current_prefs_str}
@@ -405,18 +406,11 @@ If no information is detected for a category, return empty array []."""
             # Check if category exists
             if category not in updated_preferences:
                 updated_preferences[category] = {}
-            
-            # Directly update preference, no confidence consideration
+            # Update preference with only necessary fields
             updated_preferences[category] = {
                 "preference": update.value,
                 "importance": update.importance
             }
-            
-            # Add extra information
-            if update.preference_type == "implicit":
-                updated_preferences[category]["implicit"] = True
-            if update.reason:
-                updated_preferences[category]["reason"] = update.reason
             
         return updated_preferences
     

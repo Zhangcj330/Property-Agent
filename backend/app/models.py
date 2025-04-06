@@ -19,7 +19,8 @@ class UserPreferences(TypedDict):
     SchoolDistrict: UserPreference = UserPreference(preference=None, importance=0.5)
     Community: UserPreference = UserPreference(preference=None, importance=0.5)
     Transport: UserPreference = UserPreference(preference=None, importance=0.5)        
-    Other: UserPreference = UserPreference(preference=None, importance=0.5)
+    Location: UserPreference = UserPreference(preference=None, importance=0.5)
+    Investment: UserPreference = UserPreference(preference=None, importance=0.5)
 
 # Request model for property search
 class PropertySearchRequest(TypedDict):

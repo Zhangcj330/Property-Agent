@@ -17,13 +17,6 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.tools import tool
 from langgraph.graph import StateGraph, MessagesState, START, END
 
-# Define custom state class
-class AgentMessagesState(MessagesState):
-    """State class for the agent that extends MessagesState with additional fields"""
-    session_id: str
-    preferences: dict
-    search_params: dict
-
 from app.config import settings
 from app.models import (
     PropertySearchRequest,
@@ -32,11 +25,13 @@ from app.models import (
     FirestoreProperty,
     ChatSession,
     ChatMessage,
+    PropertyRecommendationResponse,
 )
 from app.services.image_processor import ImageProcessor, ImageAnalysisRequest, PropertyAnalysis
 from app.services.property_scraper import PropertyScraper
 from app.services.recommender import PropertyRecommender
 from app.services.chat_storage import ChatStorageService
+from app.services.firestore_service import FirestoreService
 from app.services.preference_service import (
     extract_preferences_and_search_params,
     get_current_preferences_and_search_params,
@@ -54,6 +49,7 @@ image_processor = ImageProcessor()
 property_scraper = PropertyScraper()
 recommender = PropertyRecommender()
 chat_storage = ChatStorageService()
+firestore_service = FirestoreService()
 
 # Default LLM
 llm = ChatGoogleGenerativeAI(
@@ -61,6 +57,16 @@ llm = ChatGoogleGenerativeAI(
     base_url=settings.BASE_URL,
     model="gemini-2.0-flash",
 )
+
+# Define custom state class
+class AgentMessagesState(MessagesState):
+    """State class for the agent that extends MessagesState with additional fields"""
+    session_id: str
+    preferences: Dict[str, Any]
+    search_params: Dict[str, Any]
+    recommendation_history: List[str] = Field(default_factory=list, description="List of listing_ids that have been recommended")
+    latest_recommendation: Optional[PropertyRecommendationResponse] = Field(default=None, description="Most recent property recommendations")
+    available_properties: List[FirestoreProperty] = Field(default_factory=list, description="List of properties from the latest search")
 
 # Tool parameter models
 class ExtractPreferencesInput(BaseModel):
@@ -112,91 +118,65 @@ async def search_properties(search_params: dict) -> List[FirestoreProperty]:
             - land_size_to (Optional[float]): Maximum land size in sqm
     
     Returns:
-        List of FirestoreProperty objects containing search results
+        List of FirestoreProperty objects containing search results with analysis
     """
     search_request = PropertySearchRequest(**search_params)
-    results = await property_scraper.search_properties(search_request)
+    results = await property_scraper.search_properties(search_request, max_results = 5)
     
-    # Convert PropertySearchResponse to FirestoreProperty
     firestore_properties = []
     for result in results:
+        # Convert to FirestoreProperty
         firestore_property = FirestoreProperty.from_search_response(result)
-        firestore_properties.append(firestore_property)
+        
+        # Check if property exists in Firestore with analysis
+        stored_property = await firestore_service.get_property(firestore_property.listing_id)
+        
+        if stored_property and stored_property.analysis:
+            # Use existing analysis if available
+            firestore_properties.append(stored_property)
+        elif firestore_property.media.image_urls:
+            try:
+                # Create new analysis
+                image_analysis = await image_processor.analyze_property_image(
+                    ImageAnalysisRequest(image_urls=firestore_property.media.image_urls)
+                )
+                # Save property and update with analysis
+                await firestore_service.save_property(firestore_property)
+                await firestore_service.update_property_analysis(
+                    firestore_property.listing_id, 
+                    image_analysis
+                )
+                # Get the updated property with analysis
+                analyzed_property = await firestore_service.get_property(firestore_property.listing_id)
+                if analyzed_property:
+                    firestore_properties.append(analyzed_property)
+            except Exception as e:
+                print(f"Error analyzing property {firestore_property.listing_id}: {str(e)}")
+                # Still include the property even if analysis fails
+                firestore_properties.append(firestore_property)
+        else:
+            # Include property without analysis if no images available
+            firestore_properties.append(firestore_property)
     
     return firestore_properties
 
 @tool
-async def analyze_property_images(property_info: dict) -> FirestoreProperty:
-    """Analyze property images to extract features and quality assessment.
+async def get_property_recommendations(recommendation_params: Dict[str, Any]) -> PropertyRecommendationResponse:
+    """Get personalized property recommendations based on analyzed properties and user preferences.
+    
+    Note: This tool expects the properties to be available in the state. The properties parameter
+    in recommendation_params is ignored as we use the properties stored in state.
     
     Args:
-        property_info: Simple dictionary with property information:
-            {
-                "listing_id": "123",           # Required: Property listing ID
-                "address": "123 Main St",      # Required: Property address
-                "image_urls": ["url1", "url2"] # Required: List of image URLs to analyze
-            }
+        recommendation_params: Dictionary containing:
+            - preferences (UserPreferences): User preferences for recommendation
+            - recommendation_history (List[str]): List of previously recommended property listing_ids
     
     Returns:
-        Property object with analysis results
+        PropertyRecommendationResponse containing recommended properties
     """
-
-    
-    try:
-        analysis_request = ImageAnalysisRequest(image_urls=property_info.image_urls)
-        analysis_result = await image_processor.analyze_property_image(analysis_request)
-        return analysis_result
-    except Exception as e:
-        return f"Error analyzing property images: {e}"
-
-@tool
-async def get_property_recommendations(recommendation_params: dict) -> List[FirestoreProperty]:
-    """Get personalized property recommendations.
-    
-    Args:
-        recommendation_params: Simple dictionary with recommendation criteria:
-            {
-                "properties": [                    # Required: List of property IDs to consider
-                    {
-                        "listing_id": "123",
-                        "address": "123 Main St",
-                        "image_urls": ["url1", "url2"]
-                    }
-                ],
-                "preferences": {                   # Required: User preferences
-                    "style": "modern",            # Optional: Preferred style
-                    "environment": "quiet",       # Optional: Preferred environment
-                    "quality": "high",            # Optional: Preferred quality level
-                    "features": "spacious",       # Optional: Preferred features
-                    "location": "close to train"  # Optional: Location preferences
-                }
-            }
-    
-    Returns:
-        List of recommended properties
-    """
-    # Convert simple preferences to UserPreferences format
-    structured_preferences = UserPreferences(
-        Style=UserPreference(preference=recommendation_params["preferences"].get("style", ""), confidence_score=0.9, weight=0.8),
-        Environment=UserPreference(preference=recommendation_params["preferences"].get("environment", ""), confidence_score=0.9, weight=0.8),
-        Quality=UserPreference(preference=recommendation_params["preferences"].get("quality", ""), confidence_score=0.9, weight=0.8),
-        Features=UserPreference(preference=recommendation_params["preferences"].get("features", ""), confidence_score=0.8, weight=0.7),
-        Transport=UserPreference(preference=recommendation_params["preferences"].get("location", ""), confidence_score=0.7, weight=0.6)
-    )
-    
-    # Convert property list to FirestoreProperty objects
-    properties = []
-    for prop_info in recommendation_params["properties"]:
-        analyzed_prop = await analyze_property_images(prop_info)
-        properties.append(analyzed_prop)
-    
-    recommendations = await recommender.get_recommendations(
-        properties=properties,
-        preferences=structured_preferences,
-        limit=int(recommendation_params.get("limit", 2))
-    )
-    
-    return recommendations
+    # This is just a placeholder - actual properties will be injected in tool_node
+    return PropertyRecommendationResponse(properties=[])
 
 @tool
 async def extract_preferences(session_id: str, user_message: str) -> dict:
@@ -245,8 +225,6 @@ async def extract_preferences(session_id: str, user_message: str) -> dict:
     
     return {
         "session_id": session_id,
-        "preferences": [pref.model_dump() for pref in preferences],
-        "search_params": [param.model_dump() for param in search_params],
         "updated_preferences": updated_preferences,
         "updated_search_params": updated_search_params
     }
@@ -317,10 +295,8 @@ If no preferences can be reliably inferred, respond with exactly: []"""),
 
 # Augment the LLM with tools
 tools = [
-    # search_properties,
-    #analyze_property_images,
-    #get_property_recommendations,
-    get_session_state,
+    search_properties,
+    get_property_recommendations,
     extract_preferences,
     handle_rejection
 ]
@@ -340,7 +316,6 @@ async def get_conversation_context(session_id: str) -> str:
         context += f"- {msg.role}: {msg.content}\n"
     return context
 
-# Enhanced nodes
 async def llm_call(state: dict) -> AgentMessagesState:
     """LLM with conversation awareness"""
     session_id = state["session_id"]
@@ -358,26 +333,21 @@ async def llm_call(state: dict) -> AgentMessagesState:
 content=f"""
 You are an intelligent property agent assistant that helps users find and analyze properties.
 
-Your job is to IMMEDIATELY use provided tools to fulfill user requests. DO NOT simply state intentions in plain text. Always follow these steps strictly:
+Your job is to IMMEDIATELY use provided tools to fulfill user requests. 
 
-1. THINK: Clearly consider what the user is asking and determine the correct tool to fulfill the request.
-2. ACTION: Immediately call the relevant tool provided by LangChain:
-   - For property searches: use `search_properties`
-   - For image analysis: use `analyze_property_images`
-   - For recommendations: use `get_property_recommendations`
-   - For preference extraction: use `extract_preferences`
-   - For handling rejections: use `handle_rejection`
-   - For getting current state: use `get_session_state`
-3. OBSERVATION: Review the results from tool execution.
-4. REPEAT until user request is completely satisfied.
+You run in a loop of Thought, Action, PAUSE, Observation.
+At the end of the loop you output an Answer
+Use Thought to describe your thoughts about the question you have been asked.
+Use Action to run one of the actions available to you - then return PAUSE.
+Observation will be the result of running those actions.
 
 Important Tool Usage Guidelines:
 - Always use `extract_preferences` first when user expresses preferences or requirements
-- When location is ambiguous (e.g., "Sydney", "North Shore"), handle the clarification from `extract_preferences` result
+- When extracted location is ambiguous (e.g., too large like "Sydney", "North Shore"), ask for clarification.
 - Use `handle_rejection` when user expresses dissatisfaction with a property
-- After preference updates, consider using `search_properties` with updated criteria
-- For property analysis, always use `analyze_property_images` before recommendations
-- Use `get_property_recommendations` to provide personalized suggestions
+- Always give recommendation about surburb based on user's preference, unless user specify otherwise.
+- Use `search_properties` to find properties matching the search criteria
+- After `search_properties`, use `get_property_recommendations` to get personalized property recommendations
 
 DO NOT reply in plain text about what you "plan" or "will" do. Instead, IMMEDIATELY trigger the relevant tool action.
 
@@ -389,13 +359,13 @@ DO NOT reply in plain text about what you "plan" or "will" do. Instead, IMMEDIAT
     )
     
     return AgentMessagesState(
-        messages=[response],
+        messages=state["messages"] + [response],
         session_id=session_id,
         preferences=state["preferences"],
         search_params=state["search_params"]
     )
 
-async def tool_node(state: dict) -> AgentMessagesState:
+async def tool_node(state: Dict[str, Any]) -> AgentMessagesState:
     """Enhanced tool execution with history awareness"""
     session_id = state["session_id"]
     
@@ -404,7 +374,10 @@ async def tool_node(state: dict) -> AgentMessagesState:
     if not session:
         session = await chat_storage.create_session(session_id)
     
-    result = []
+    result: List[ToolMessage] = []
+    recommendation_history: List[str] = state.get("recommendation_history", [])
+    latest_recommendation: Optional[PropertyRecommendationResponse] = state.get("latest_recommendation")
+    available_properties: List[FirestoreProperty] = state.get("available_properties", [])
     
     for tool_call in state["messages"][-1].tool_calls:
         tool = tools_by_name[tool_call["name"]]
@@ -413,24 +386,55 @@ async def tool_node(state: dict) -> AgentMessagesState:
         # Add session_id and other state info to tool args
         if isinstance(args, dict):
             args["session_id"] = session_id
-            if tool.name == "get_property_recommendations":
-                args["preferences"] = state["preferences"]
             if tool.name == "search_properties":
                 args["search_params"] = state["search_params"]
         
-        observation = await tool.ainvoke(args)
+        # Special handling for property recommendations
+        if tool.name == "get_property_recommendations":
+            # Filter out previously recommended properties
+            new_properties = [
+                prop for prop in available_properties 
+                if prop.listing_id not in recommendation_history
+            ]
+            
+            if not new_properties:
+                observation = PropertyRecommendationResponse(properties=[])
+            else:
+                # Get recommendations using the recommender service
+                observation = await recommender.get_recommendations(
+                    properties=new_properties,
+                    preferences=state["preferences"]
+                )
+        else:
+            # Normal tool execution
+            observation = await tool.ainvoke(args)
+        
         result.append(ToolMessage(content=str(observation), tool_call_id=tool_call["id"]))
         
-        # Update state based on tool results if needed
+        # Update state based on tool results
         if tool.name == "extract_preferences" and isinstance(observation, dict):
             state["preferences"] = observation.get("updated_preferences", state["preferences"])
             state["search_params"] = observation.get("updated_search_params", state["search_params"])
+        elif tool.name == "search_properties":
+            # Store the search results in state
+            available_properties = observation
+        elif tool.name == "get_property_recommendations":
+            # Update latest recommendation and history
+            latest_recommendation = observation
+            if isinstance(observation, dict):
+                new_recommendations = [
+                    prop.listing_id for prop in observation.get("properties", [])
+                ]
+                recommendation_history.extend(new_recommendations)
     
     return AgentMessagesState(
-        messages=result,
+        messages=state["messages"] + result,
         session_id=session_id,
         preferences=state["preferences"],
-        search_params=state["search_params"]
+        search_params=state["search_params"],
+        recommendation_history=recommendation_history,
+        latest_recommendation=latest_recommendation,
+        available_properties=available_properties
     )
 
 # Conditional edge function
@@ -470,12 +474,7 @@ display(Image(agent.get_graph(xray=True).draw_mermaid_png()))
 # Example usage
 async def run_example():
     session_id = "example_session"
-    
-    # Create session if it doesn't exist
-    session = await chat_storage.get_session(session_id)
-    if not session:
-        session = await chat_storage.create_session(session_id)
-    
+
     # Example search request
     search_request = PropertySearchRequest(
         location=["NSW-chatswood-2067"],
@@ -517,7 +516,10 @@ async def run_example():
         "messages": [HumanMessage(content=initial_query)],
         "session_id": session_id,
         "preferences": preferences or {},
-        "search_params": search_request or {}
+        "search_params": search_request or {},
+        "recommendation_history": [],
+        "latest_recommendation": None,
+        "available_properties": []
     }
     final_state = await agent.ainvoke(initial_state)
     

@@ -50,6 +50,8 @@ class ChatInput(BaseModel):
     user_input: str = Field(..., min_length=1)  # 确保用户输入不为空
     preferences: Optional[Dict] = {}  # 设置默认空字典
     search_params: Optional[Dict] = {}  # 设置默认空字典
+    recommendation_history: Optional[List[str]] = None
+    latest_recommendation: Optional[PropertyRecommendationResponse] = None
 
 class ChatResponse(BaseModel):
     """Response model for chat endpoint"""
@@ -57,7 +59,8 @@ class ChatResponse(BaseModel):
     response: str
     preferences: Optional[Dict] = None
     search_params: Optional[Dict] = None
-    is_complete: bool = False
+    recommendation_history: Optional[List[str]] = None
+    latest_recommendation: Optional[PropertyRecommendationResponse] = None
 
 class PropertyRecommendationRequest(BaseModel):
     """Request model for property recommendations based on state"""
@@ -273,7 +276,9 @@ async def agent_chat_endpoint(chat_input: ChatInput):
             "messages": [HumanMessage(content=chat_input.user_input)],
             "session_id": session_id,
             "preferences": chat_input.preferences or {},
-            "search_params": chat_input.search_params or {}
+            "search_params": chat_input.search_params or {},
+            "recommendation_history": chat_input.recommendation_history or [],
+            "latest_recommendation": None
         }
 
         # Run the agent
@@ -291,16 +296,14 @@ async def agent_chat_endpoint(chat_input: ChatInput):
         # Extract the last message and any updated state
         last_message = final_state["messages"][-1].content if final_state["messages"] else ""
         
-        # Get current session state using ainvoke
-        session_state = await get_session_state.ainvoke(session_id)
-        
         # Construct response
         response = ChatResponse(
             session_id=session_id,
             response=last_message,
-            preferences=session_state.get("preferences", {}),
-            search_params=session_state.get("search_params", {}),
-            is_complete=True if final_state["messages"][-1].type == "ai" else False
+            preferences=final_state["preferences"],
+            search_params=final_state["search_params"],
+            recommendation_history=final_state["recommendation_history"],
+            latest_recommendation=final_state["latest_recommendation"]
         )
         
         logger.info(f"Returning agent response: {response}")
