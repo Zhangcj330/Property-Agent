@@ -1,6 +1,6 @@
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Union
 from google.cloud import firestore
-from app.models import PropertySearchResponse, FirestoreProperty
+from app.models import PropertySearchResponse, FirestoreProperty, InvestmentInfo, PlanningInfo
 from app.services.image_processor import PropertyAnalysis
 from app.config import settings
 from datetime import datetime
@@ -11,11 +11,21 @@ class FirestoreService:
         self.db = firestore.Client.from_service_account_info(settings.FIREBASE_CONFIG)
         self.properties_collection = self.db.collection('properties')
 
-    async def save_property(self, property_data: PropertySearchResponse) -> str:
-        """Save or update a property listing"""
+    async def save_property(self, property_data: Union[PropertySearchResponse, FirestoreProperty]) -> str:
+        """Save or update a property listing
+        
+        Args:
+            property_data: Either a PropertySearchResponse or FirestoreProperty object
+        
+        Returns:
+            str: The listing ID of the saved property
+        """
         try:
-            # Convert to optimized Firestore model
-            firestore_property = FirestoreProperty.from_search_response(property_data)
+            # Convert to FirestoreProperty if needed
+            firestore_property = (
+                property_data if isinstance(property_data, FirestoreProperty)
+                else FirestoreProperty.from_search_response(property_data)
+            )
             
             # Use listing_id as document ID
             doc_ref = self.properties_collection.document(firestore_property.listing_id)
@@ -29,12 +39,18 @@ class FirestoreService:
                 # Update timestamp
                 firestore_property.metadata.updated_at = datetime.now()
                 
-                # Preserve analysis if it exists in database but not in new data
+                # Preserve existing data if not in new data
                 if existing_data.get('analysis') and not firestore_property.analysis:
                     firestore_property.analysis = existing_data['analysis']
-            # update the existing data with the new data
+                if existing_data.get('investment_info') and not any(vars(firestore_property.investment_info).values()):
+                    firestore_property.investment_info = InvestmentInfo(**existing_data['investment_info'])
+                if existing_data.get('planning_info') and not any(vars(firestore_property.planning_info).values()):
+                    firestore_property.planning_info = PlanningInfo(**existing_data['planning_info'])
+            
+            # Save to Firestore
             doc_ref.set(firestore_property.model_dump())
             return firestore_property.listing_id
+            
         except Exception as e:
             print(f"Error saving property: {str(e)}")
             raise

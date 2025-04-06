@@ -1,3 +1,3 @@
 """
-App package initialization
+Property Agent backend application
 """

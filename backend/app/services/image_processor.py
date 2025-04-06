@@ -1,6 +1,6 @@
 import base64
 import requests
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Literal
 from pydantic import BaseModel, Field, HttpUrl
 import json
 from fastapi import HTTPException
@@ -8,6 +8,35 @@ from langchain_community.chat_models import ChatOpenAI
 from langchain_core.output_parsers import JsonOutputParser
 from langchain_core.messages import HumanMessage
 from app.config import settings
+
+
+class VisibleDefects(BaseModel):
+    external_cracks: Literal["Absent", "Present"]
+    structural_damage: Literal["Absent", "Present"]
+    general_disrepair: Literal["Absent", "Present"]
+    roof_gutter_damage: Literal["Absent", "Present"]
+
+class ExteriorFeatures(BaseModel):
+    building_materials: Literal["Brick", "Wood", "Concrete", "Other"]
+    facade_condition: Literal["Well-maintained", "Moderate", "Poor"]
+    external_fencing: Literal["None", "Partially Fenced", "Fully Fenced"]
+    solar_panels: Literal["Yes", "No"]
+    garden_condition: Literal["None", "Basic/Minimal", "Well-maintained"]
+    parking_type: Literal["Garage", "Driveway", "Street", "None"]
+    roof_material: Literal["Tile", "Metal", "Shingle", "Other"]
+
+class InteriorFeatures(BaseModel):
+    flooring_type: Literal["Mixed", "Tile", "Wood", "Carpet"]
+    bathroom_condition: Literal["Modern/Updated", "Outdated"]
+    kitchen_condition: Literal["Modern/Updated", "Outdated"]
+    flooring_condition: Literal["Good", "Worn"]
+
+class InteriorQualityStyle(BaseModel):
+    design_style: Literal["Transitional", "Modern", "Traditional", "Other"]
+    paint_decor: Literal["Neutral", "Bold", "Mixed"]
+    lighting_natural_light: Literal["Bright", "Dim"]
+    kitchen_style: Literal["Modern/Updated", "Outdated"]
+    renovation_status: Literal["Partially Renovated", "Fully Renovated", "None"]
 
 # Add Pydantic models
 class Environment(BaseModel):
@@ -20,38 +49,13 @@ class Environment(BaseModel):
     land_flatness: str
     greenery: str
 
-class QualityFactors(BaseModel):
-    positive: List[str]
-    negative: List[str]
-
-class QualityAssessment(BaseModel):
-    overall_score: float = Field(ge=0, le=10)
-    condition: str
-    maintenance_level: str
-    build_quality: str
-    environment: Environment
-    factors: QualityFactors
-
-class Style(BaseModel):
-    architectural_style: str
-    era: str
-    design_elements: List[str]
-
-class Features(BaseModel):
-    interior: List[str]
-    exterior: List[str]
-    notable_amenities: List[str]
-
-class RoomAnalysis(BaseModel):
-    space_usage: str
-    natural_light: str
-    layout_quality: str
 
 class PropertyAnalysis(BaseModel):
-    style: Style
-    features: Features
-    quality_assessment: QualityAssessment
-    room_analysis: RoomAnalysis
+    visible_defects: VisibleDefects
+    exterior_features: ExteriorFeatures
+    interior_features: InteriorFeatures
+    interior_quality_style: InteriorQualityStyle
+    environment: Environment
 
 # Add API request/response models
 class ImageAnalysisRequest(BaseModel):

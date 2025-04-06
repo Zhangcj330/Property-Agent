@@ -83,6 +83,23 @@ class PropertyMetadata(BaseModel):
     source: Optional[str] = "scraper"
     status: Optional[str] = "active"  # active, sold, withdrawn, etc.
 
+class InvestmentInfo(BaseModel):
+    """Investment metrics for a property"""
+    rental_yield: Optional[float] = None  # Annual rental yield as percentage
+    capital_gain: Optional[float] = None  # 1-year capital gain as percentage
+    current_price: Optional[float] = None  # Current median price
+    weekly_rent: Optional[float] = None   # Current weekly rent
+
+class PlanningInfo(BaseModel):
+    """Planning information for a property"""
+    zone_name: Optional[str] = None
+    height_limit: Optional[float] = None
+    floor_space_ratio: Optional[float] = None
+    min_lot_size: Optional[float] = None
+    is_heritage: bool = False
+    flood_risk: bool = False
+    landslide_risk: bool = False
+
 class PropertyEvents(BaseModel):
     """Property events and important dates"""
     inspection_date: Optional[str] = None
@@ -103,6 +120,10 @@ class FirestoreProperty(BaseModel):
     
     # Analysis data (can be null)
     analysis: Optional[Dict[str, Any]] = None
+    
+    # Investment and planning information
+    investment_info: InvestmentInfo = Field(default_factory=InvestmentInfo)
+    planning_info: PlanningInfo = Field(default_factory=PlanningInfo)
     
     @classmethod
     def from_search_response(cls, response: PropertySearchResponse):

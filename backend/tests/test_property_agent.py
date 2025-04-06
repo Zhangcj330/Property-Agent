@@ -145,18 +145,18 @@ def mock_recommendation_service():
         for prop in MOCK_PROPERTIES:
             # Create the basic info object
             basic_info = PropertyBasicInfo(
-                price_value=3500000.0 if "3,500,000" in prop.price else None,
-                price_is_numeric="3,500,000" in prop.price,
-                full_address=prop.address,
-                street_address=prop.address.split(',')[0] if ',' in prop.address else prop.address,
-                suburb=prop.address.split(',')[1].strip() if ',' in prop.address and len(prop.address.split(',')) > 1 else None,
+                price_value=3500000.0 if isinstance(prop, PropertySearchResponse) and "3,500,000" in prop.price else None,
+                price_is_numeric=isinstance(prop, PropertySearchResponse) and "3,500,000" in prop.price,
+                full_address=prop.address if isinstance(prop, PropertySearchResponse) else prop.basic_info.full_address,
+                street_address=prop.address.split(',')[0] if isinstance(prop, PropertySearchResponse) and ',' in prop.address else prop.basic_info.street_address,
+                suburb=prop.address.split(',')[1].strip() if isinstance(prop, PropertySearchResponse) and ',' in prop.address and len(prop.address.split(',')) > 1 else prop.basic_info.suburb,
                 state="NSW",
-                postcode=prop.address.split('NSW')[1].strip() if 'NSW' in prop.address else None,
-                bedrooms_count=int(prop.bedrooms) if prop.bedrooms and prop.bedrooms.isdigit() else None,
-                bathrooms_count=float(prop.bathrooms) if prop.bathrooms and prop.bathrooms.isdigit() else None,
-                car_parks=prop.car_parks,
-                land_size=prop.land_size,
-                property_type=prop.property_type
+                postcode=prop.address.split('NSW')[1].strip() if isinstance(prop, PropertySearchResponse) and 'NSW' in prop.address else prop.basic_info.postcode,
+                bedrooms_count=int(prop.bedrooms) if isinstance(prop, PropertySearchResponse) and prop.bedrooms and prop.bedrooms.isdigit() else prop.basic_info.bedrooms_count,
+                bathrooms_count=float(prop.bathrooms) if isinstance(prop, PropertySearchResponse) and prop.bathrooms and prop.bathrooms.isdigit() else prop.basic_info.bathrooms_count,
+                car_parks=prop.car_parks if isinstance(prop, PropertySearchResponse) else prop.basic_info.car_parks,
+                land_size=prop.land_size if isinstance(prop, PropertySearchResponse) else prop.basic_info.land_size,
+                property_type=prop.property_type if isinstance(prop, PropertySearchResponse) else prop.basic_info.property_type
             )
             
             # Create media object

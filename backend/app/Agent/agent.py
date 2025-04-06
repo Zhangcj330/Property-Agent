@@ -1,6 +1,7 @@
 import os
 import sys
 from pathlib import Path
+import asyncio
 
 # Add the backend directory to Python path
 backend_dir = Path(__file__).parent.parent.parent
@@ -26,6 +27,7 @@ from app.models import (
     ChatSession,
     ChatMessage,
     PropertyRecommendationResponse,
+    PropertySearchResponse
 )
 from app.services.image_processor import ImageProcessor, ImageAnalysisRequest, PropertyAnalysis
 from app.services.property_scraper import PropertyScraper
@@ -39,6 +41,8 @@ from app.services.preference_service import (
     PreferenceService,
     PreferenceUpdate
 )
+from app.services.planning_service import get_planning_info
+from app.services.investment_service import InvestmentService
 from IPython.display import Image, display
 
 from dotenv import load_dotenv
@@ -50,6 +54,7 @@ property_scraper = PropertyScraper()
 recommender = PropertyRecommender()
 chat_storage = ChatStorageService()
 firestore_service = FirestoreService()
+investment_service = InvestmentService()
 
 # Default LLM
 llm = ChatGoogleGenerativeAI(
@@ -101,6 +106,95 @@ async def get_session_state(session_id: str) -> dict:
         "search_params": session.search_params or {}
     }
 
+async def process_property(result: PropertySearchResponse) -> FirestoreProperty:
+    # Convert to FirestoreProperty
+    firestore_property = FirestoreProperty.from_search_response(result)
+    
+    # Check if property exists in Firestore with analysis
+    stored_property = await firestore_service.get_property(firestore_property.listing_id)
+    
+    if stored_property and stored_property.analysis:
+        # Use existing analysis if available
+        return stored_property
+    
+    # Initialize tasks list
+    tasks = []
+    
+    # Add planning info task if address available
+    if firestore_property.basic_info.full_address:
+        async def get_planning():
+            try:
+                planning_info = await get_planning_info(firestore_property.basic_info.full_address)
+                if not planning_info.error:
+                    firestore_property.planning_info = planning_info
+            except Exception as e:
+                print(f"Error getting planning info for {firestore_property.listing_id}: {str(e)}")
+        tasks.append(get_planning())
+    
+    # Add investment metrics task if suburb info available
+    if firestore_property.basic_info.suburb and firestore_property.basic_info.postcode:
+        async def get_investment():
+            try:
+                investment_metrics = investment_service.get_investment_metrics(
+                    suburb=firestore_property.basic_info.suburb,
+                    postcode=firestore_property.basic_info.postcode,
+                    bedrooms=firestore_property.basic_info.bedrooms_count or 2
+                )
+                firestore_property.investment_info = investment_metrics
+            except Exception as e:
+                print(f"Error getting investment metrics for {firestore_property.listing_id}: {str(e)}")
+        tasks.append(get_investment())
+    
+    # Add image analysis task if images available
+    if firestore_property.media.image_urls:
+        async def analyze_images():
+            try:
+                # Create tasks for parallel execution
+                analysis_task = image_processor.analyze_property_image(
+                    ImageAnalysisRequest(image_urls=firestore_property.media.image_urls)
+                )
+                save_property_task = firestore_service.save_property(firestore_property)
+                
+                # Execute image analysis and property save in parallel
+                image_analysis, _ = await asyncio.gather(analysis_task, save_property_task)
+                
+                if image_analysis:
+                    # Update analysis and get the final property in parallel
+                    update_task = firestore_service.update_property_analysis(
+                        firestore_property.listing_id, 
+                        image_analysis
+                    )
+                    get_property_task = firestore_service.get_property(firestore_property.listing_id)
+                    
+                    # Wait for both operations to complete
+                    _, analyzed_property = await asyncio.gather(update_task, get_property_task)
+                    
+                    if analyzed_property:
+                        return analyzed_property
+            except Exception as e:
+                print(f"Error analyzing images for {firestore_property.listing_id}: {str(e)}")
+            return None
+        tasks.append(analyze_images())
+    
+    try:
+        # Run all tasks concurrently and collect results
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        # Check if any of the results is a valid property (from image analysis)
+        for result in results:
+            if isinstance(result, FirestoreProperty):
+                return result
+                
+    except Exception as e:
+        print(f"Error in concurrent processing for {firestore_property.listing_id}: {str(e)}")
+    
+    # If we get here, either there were no tasks or no valid property was returned
+    # Save the property if it wasn't saved during image analysis
+    if not stored_property:
+        await firestore_service.save_property(firestore_property)
+    
+    return firestore_property
+
 @tool
 async def search_properties(search_params: dict) -> List[FirestoreProperty]:
     """Search for properties based on given criteria.
@@ -118,47 +212,20 @@ async def search_properties(search_params: dict) -> List[FirestoreProperty]:
             - land_size_to (Optional[float]): Maximum land size in sqm
     
     Returns:
-        List of FirestoreProperty objects containing search results with analysis
+        List of FirestoreProperty objects containing search results and analysis
     """
     search_request = PropertySearchRequest(**search_params)
     results = await property_scraper.search_properties(search_request, max_results = 5)
     
-    firestore_properties = []
-    for result in results:
-        # Convert to FirestoreProperty
-        firestore_property = FirestoreProperty.from_search_response(result)
-        
-        # Check if property exists in Firestore with analysis
-        stored_property = await firestore_service.get_property(firestore_property.listing_id)
-        
-        if stored_property and stored_property.analysis:
-            # Use existing analysis if available
-            firestore_properties.append(stored_property)
-        elif firestore_property.media.image_urls:
-            try:
-                # Create new analysis
-                image_analysis = await image_processor.analyze_property_image(
-                    ImageAnalysisRequest(image_urls=firestore_property.media.image_urls)
-                )
-                # Save property and update with analysis
-                await firestore_service.save_property(firestore_property)
-                await firestore_service.update_property_analysis(
-                    firestore_property.listing_id, 
-                    image_analysis
-                )
-                # Get the updated property with analysis
-                analyzed_property = await firestore_service.get_property(firestore_property.listing_id)
-                if analyzed_property:
-                    firestore_properties.append(analyzed_property)
-            except Exception as e:
-                print(f"Error analyzing property {firestore_property.listing_id}: {str(e)}")
-                # Still include the property even if analysis fails
-                firestore_properties.append(firestore_property)
-        else:
-            # Include property without analysis if no images available
-            firestore_properties.append(firestore_property)
-    
-    return firestore_properties
+    # Process all properties concurrently
+    try:
+        firestore_properties = await asyncio.gather(
+            *[process_property(result) for result in results]
+        )
+        return [prop for prop in firestore_properties if prop is not None]
+    except Exception as e:
+        print(f"Error in concurrent property processing: {str(e)}")
+        return []
 
 @tool
 async def get_property_recommendations(recommendation_params: Dict[str, Any]) -> PropertyRecommendationResponse:
@@ -417,7 +484,7 @@ async def tool_node(state: Dict[str, Any]) -> AgentMessagesState:
             state["search_params"] = observation.get("updated_search_params", state["search_params"])
         elif tool.name == "search_properties":
             # Store the search results in state
-            available_properties = observation
+            available_properties = available_properties + observation
         elif tool.name == "get_property_recommendations":
             # Update latest recommendation and history
             latest_recommendation = observation
@@ -471,163 +538,4 @@ agent = agent_builder.compile()
 # Show the agent graph
 display(Image(agent.get_graph(xray=True).draw_mermaid_png()))
 
-# Example usage
-async def run_example():
-    session_id = "example_session"
-
-    # Example search request
-    search_request = PropertySearchRequest(
-        location=["NSW-chatswood-2067"],
-        max_price=3500000,
-        property_type=["house"],
-        min_bedrooms=3
-    )
-    
-    # Example user preferences
-    preferences = UserPreferences(
-        Style=UserPreference(preference="modern", confidence_score=0.9, weight=0.5),
-        Environment=UserPreference(preference="quiet", confidence_score=0.9, weight=0.5),
-        Quality=UserPreference(preference="high", confidence_score=0.9, weight=0.5),
-        Features=UserPreference(preference="spacious", confidence_score=0.8, weight=0.4),
-        Layout=UserPreference(preference="open plan", confidence_score=0.8, weight=0.4),
-        Transport=UserPreference(preference="close to station", confidence_score=0.7, weight=0.3)
-    )
-    
-    print("🏠 Starting Property Agent Example...")
-    
-    # Initial property search query with structured format
-    initial_query = """
-    Find properties in Chatswood (NSW-chatswood-2067) with these criteria:
-    - Maximum price: $3.5M
-    - Property type: house
-    - Minimum 3 bedrooms
-    
-    Preferences:
-    - Modern style (high priority)
-    - Quiet environment (high priority)
-    - High quality construction (high priority)
-    - Spacious and open plan layout
-    - Close to public transport
-    
-    Please analyze the properties and provide detailed recommendations.
-    """
-    
-    initial_state = {
-        "messages": [HumanMessage(content=initial_query)],
-        "session_id": session_id,
-        "preferences": preferences or {},
-        "search_params": search_request or {},
-        "recommendation_history": [],
-        "latest_recommendation": None,
-        "available_properties": []
-    }
-    final_state = await agent.ainvoke(initial_state)
-    
-    print("\n🤖 Agent's Response:")
-    for message in final_state["messages"]:
-        message.pretty_print()
-
-async def test_preference_service():
-    """Test function for preference service functionality"""
-    try:
-        session_id = "test_session"
-        
-        print("\n=== Testing Preference Service ===\n")
-        
-        # Test 1: Extract preferences from initial message
-        print("Test 1: Extracting preferences from initial message")
-        initial_message = """
-        I'm looking for a house in Sydney, preferably modern style with 3 bedrooms.
-        It should be in a quiet area and close to public transport.
-        My budget is around 2.5M.
-        """
-        
-        try:
-            result = await extract_preferences.ainvoke({
-                "session_id": session_id,
-                "user_message": initial_message
-            })
-            
-            print("\nExtracted Preferences:")
-            if "preferences" in result:
-                for pref in result["preferences"]:
-                    print(f"• {pref['category']}: {pref['value']} (Importance: {pref['importance']})")
-            
-            print("\nSearch Parameters:")
-            if "search_params" in result:
-                for param in result["search_params"]:
-                    print(f"• {param['param_name']}: {param['value']}")
-            
-            if "clarification" in result:
-                print("\nLocation Clarification Needed:")
-                location_info = result["clarification"]["location_info"]
-                print(f"Term: {location_info['term']}")
-                print("Suggestions:")
-                for suggestion in location_info["suggestions"]:
-                    print(f"• {suggestion}")
-                print(f"Context: {location_info['context']}")
-        except Exception as e:
-            print(f"Error in Test 1: {str(e)}")
-        
-        # Test 2: Handle property rejection
-        print("\nTest 2: Processing rejection feedback")
-        rejection_message = "The house is too far from the train station and the area is quite noisy"
-        property_details = {
-            "listing_id": "test123",
-            "address": "123 Test St, Sydney",
-            "transport": "20 min walk to station",
-            "environment": "Main road location"
-        }
-        
-        try:
-            rejection_result = await handle_rejection.ainvoke({
-                "session_id": session_id,
-                "rejection_message": rejection_message,
-                "property_details": property_details
-            })
-            
-            print("\nInferred Preferences from Rejection:")
-            if "preferences" in rejection_result:
-                for pref in rejection_result["preferences"]:
-                    print(f"• {pref['category']}: {pref['value']}")
-                    print(f"  Reason: {pref['reason']}")
-        except Exception as e:
-            print(f"Error in Test 2: {str(e)}")
-        
-        # Test 3: Get current state
-        print("\nTest 3: Getting current preferences and search parameters")
-        try:
-            current_state = await get_session_state.ainvoke({
-                "session_id": session_id
-            })
-            
-            print("\nCurrent Preferences:")
-            if current_state["preferences"]:
-                for category, pref in current_state["preferences"].items():
-                    print(f"• {category}: {pref.get('preference', 'Not set')}")
-            
-            print("\nCurrent Search Parameters:")
-            if current_state["search_params"]:
-                for param, value in current_state["search_params"].items():
-                    print(f"• {param}: {value}")
-        except Exception as e:
-            print(f"Error in Test 3: {str(e)}")
-            
-    except Exception as e:
-        print(f"Test execution error: {str(e)}")
-
-if __name__ == "__main__":
-    import asyncio
-    from dotenv import load_dotenv
-    
-    # Load environment variables
-    load_dotenv(dotenv_path=os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), '.env'))
-    
-    async def run_tests():
-        print("🏠 Starting Property Agent Tests...")
-        await test_preference_service()
-        print("\n✅ Tests completed!")
-    
-    # Run tests instead of example
-    asyncio.run(run_tests())
 
