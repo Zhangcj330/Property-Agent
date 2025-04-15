@@ -270,6 +270,14 @@ async def agent_chat_endpoint(chat_input: ChatInput):
         session = await chat_storage.get_session(session_id)
         if not session:
             session = await chat_storage.create_session(session_id)
+            
+        # Save user's message
+        user_message = ChatMessage(
+            role="user",
+            content=chat_input.user_input,
+            timestamp=datetime.now()
+        )
+        await chat_storage.save_message(session_id, user_message)
         
         # Initialize the state with the user's message
         initial_state = {

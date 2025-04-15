@@ -4,6 +4,7 @@ import operator
 import json
 from typing_extensions import TypedDict
 from enum import Enum
+from datetime import datetime
 
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
@@ -570,7 +571,8 @@ class LLMService:
         # 保存用户消息
         user_message = ChatMessage(
             role="user",
-            content=user_input
+            content=user_input,
+            timestamp=datetime.now()
         )
         await self.chat_storage.save_message(session.session_id, user_message)
         

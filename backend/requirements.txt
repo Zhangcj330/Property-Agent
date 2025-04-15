@@ -22,3 +22,8 @@ mcp
 langchain-mcp-adapters
 typing_extensions
 langchain-google-genai
+duckduckgo-search
+playwright
+nest-asyncio
+lxml
+duckdb

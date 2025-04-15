@@ -44,6 +44,8 @@ from app.services.preference_service import (
 from app.services.planning_service import get_planning_info
 from app.services.investment_service import InvestmentService
 from IPython.display import Image, display
+from langchain_community.tools import DuckDuckGoSearchResults
+from app.services.sql_service import SQLService
 
 from dotenv import load_dotenv
 load_dotenv(dotenv_path='.env')
@@ -55,6 +57,7 @@ recommender = PropertyRecommender()
 chat_storage = ChatStorageService()
 firestore_service = FirestoreService()
 investment_service = InvestmentService()
+sql_service = SQLService()  # Initialize SQL service
 
 # Default LLM
 llm = ChatGoogleGenerativeAI(
@@ -360,12 +363,30 @@ If no preferences can be reliably inferred, respond with exactly: []"""),
         print(f"Raw response: {response.content}")
         return {"preferences": [], "updated_preferences": {}}
 
+@tool
+async def query_database(question: str, context: Optional[str] = None) -> dict:
+    """Query the suburb database using natural language
+    
+    Args:
+        question: str - The natural language question to query the database
+        context: Optional[str] - Additional context to help generate the SQL query
+    
+    Returns:
+        dict: A dictionary containing the query, results and any error messages
+    """
+    response = await sql_service.process_question(question, context)
+    return response.model_dump()
+
+search_tool = DuckDuckGoSearchResults()
+
 # Augment the LLM with tools
 tools = [
     search_properties,
     get_property_recommendations,
     extract_preferences,
-    handle_rejection
+    handle_rejection,
+    search_tool,
+    query_database  # Add the new tool
 ]
 tools_by_name = {tool.name: tool for tool in tools}
 llm_with_tools = llm.bind_tools(tools)
@@ -398,7 +419,7 @@ async def llm_call(state: dict) -> AgentMessagesState:
         [
             SystemMessage(
 content=f"""
-You are an intelligent property agent assistant that helps users find and analyze properties.
+You are an intelligent property agent assistant that helps users find and analyze properties, answer questions about property market, suburbs, and related information.
 
 Your job is to IMMEDIATELY use provided tools to fulfill user requests. 
 
@@ -410,13 +431,34 @@ Observation will be the result of running those actions.
 
 Important Tool Usage Guidelines:
 - Always use `extract_preferences` first when user expresses preferences or requirements
+- Use `search_tool` when you need additional information about:
+  * Property market trends
+  * Suburb information and demographics
+  * School zones and facilities
+  * Local amenities and infrastructure
+  * Recent news about an area or development
+  * Property investment data and analysis
+  * Any other information user might interested in
+- Use `query_database` when you need to answer questions about the suburb database
 - When extracted location is ambiguous (e.g., too large like "Sydney", "North Shore"), ask for clarification.
 - Use `handle_rejection` when user expresses dissatisfaction with a property
 - Always give recommendation about surburb based on user's preference, unless user specify otherwise.
 - Use `search_properties` to find properties matching the search criteria
 - After `search_properties`, use `get_property_recommendations` to get personalized property recommendations
 
-DO NOT reply in plain text about what you "plan" or "will" do. Instead, IMMEDIATELY trigger the relevant tool action.
+When NOT using tools, follow these guidelines for natural language responses:
+1. Provide comprehensive analysis that goes beyond surface-level observations
+2. Consider multiple perspectives and potential implications
+3. Share relevant insights about market trends, demographic patterns, and future growth potential
+4. Use clear, engaging language that builds rapport with the user
+5. Structure responses to flow naturally from broad context to specific details
+6. Include both quantitative data and qualitative insights when available
+7. Acknowledge uncertainties and areas where more information might be needed
+8. Offer thoughtful suggestions while respecting the collaborative nature of the conversation
+9. Connect individual property features to broader lifestyle and investment considerations
+10. Maintain a professional yet approachable tone that builds trust
+
+DO NOT reply in plain text about what you "plan" or "will" do.
 
 {context}
 """
