@@ -1,6 +1,6 @@
 from pydantic import BaseModel, Field
 from typing import Optional, List, Dict, Tuple, Any, Union
-from typing_extensions import TypedDict
+from typing_extensions import TypedDict, Literal
 from datetime import datetime
 
 class UserPreference(TypedDict):
@@ -273,7 +273,7 @@ class PropertyRecommendationResponse(BaseModel):
 
 class ChatMessage(BaseModel):
     """单条聊天消息模型"""
-    role: str = Field(..., description="消息角色：'user' 或 'assistant'")
+    role: Literal["user", "assistant"] = Field(..., description="消息角色：'user' 或 'assistant'")
     content: str = Field(..., description="消息内容")
     timestamp: datetime = Field(default_factory=datetime.now)
 

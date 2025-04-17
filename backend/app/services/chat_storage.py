@@ -70,8 +70,21 @@ class ChatStorageService:
             return None
 
     async def save_message(self, session_id: str, message: ChatMessage):
-        """保存新消息到会话"""
+        """保存新消息到会话
+        
+        Args:
+            session_id: 会话ID
+            message: 要保存的消息
+            
+        Note:
+            只保存 user 和 assistant 的消息，system 消息会被过滤掉
+        """
         try:
+            # 验证消息角色
+            if message.role not in ["user", "assistant"]:
+                print(f"Skipping message with role: {message.role}")
+                return
+                
             session_ref = self.sessions_collection.document(session_id)
             
             # 更新会话

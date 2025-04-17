@@ -35,11 +35,7 @@ from app.services.recommender import PropertyRecommender
 from app.services.chat_storage import ChatStorageService
 from app.services.firestore_service import FirestoreService
 from app.services.preference_service import (
-    extract_preferences_and_search_params,
-    get_current_preferences_and_search_params,
-    infer_preference_from_rejection,
     PreferenceService,
-    PreferenceUpdate
 )
 from app.services.planning_service import get_planning_info
 from app.services.investment_service import InvestmentService
@@ -249,119 +245,38 @@ async def get_property_recommendations(recommendation_params: Dict[str, Any]) ->
     return PropertyRecommendationResponse(properties=[])
 
 @tool
-async def extract_preferences(session_id: str, user_message: str) -> dict:
-    """Extract preferences and search parameters from user message
+async def process_preferences(session_id: str, user_message: str, context_type: str = "normal") -> dict:
+    """Process user preferences and search parameters from conversation
     
     Args:
         session_id: str - The ID of the chat session
-        user_message: str - The user's message containing preferences and search parameters
-    
+        user_message: str - The user's message to process
+        context_type: str - Type of context ("normal" or "rejection"). If "rejection", the message is treated as property rejection feedback
+        
     Returns:
-        dict: A dictionary containing the extracted preferences and search parameters
+        dict: A dictionary containing the updated preferences, search parameters, and any ambiguity information
     """
     service = PreferenceService()
     
-    # Get or create session
-    session = await service.chat_storage.get_session(session_id)
-    if not session:
-        session = await service.chat_storage.create_session(session_id)
-    
-    # Save user message
-    await service.chat_storage.save_message(
-        session_id,
-        ChatMessage(
-            role="user",
-            content=user_message,
-            timestamp=datetime.now()
-        )
-    )
-    
-    # Extract preferences and search parameters
-    preferences, search_params = await service.extract_from_context(
-        session_id=session_id,
-        recent_message=user_message
-    )
-    print(f"Extracted preferences: {preferences}")
-    print(f"Extracted search parameters: {search_params}")
-    
-    # Update preferences and search parameters
-    updated_preferences = None
-    if preferences:
-        updated_preferences = await service.update_user_preferences(session_id, preferences)
-    
-    updated_search_params = None
-    if search_params:
-        updated_search_params = await service.update_search_params(session_id, search_params)
-    
-    return {
-        "session_id": session_id,
-        "updated_preferences": updated_preferences,
-        "updated_search_params": updated_search_params
-    }
-
-@tool
-async def handle_rejection(session_id: str, rejection_message: str, property_details: Dict[str, Any]) -> dict:
-    """Handle property rejection and infer preferences"""
-    service = PreferenceService()
-    
-    # Get session and history
-    session = await service.chat_storage.get_session(session_id)
-    if not session:
-        session = await service.chat_storage.create_session(session_id)
-    
-    # Prepare context
-    context = service._prepare_conversation_context(session.messages)
-    
-    # Add rejected property information
-    property_context = "Rejected Property Information:\n"
-    for key, value in property_details.items():
-        property_context += f"- {key}: {value}\n"
-    
-    # Use LLM to extract preferences from rejection
-    response = service.llm.invoke([
-        SystemMessage(content="""You are a professional property preference analyst. The user has just rejected a property recommendation. Please analyze potential reasons for rejection and infer implicit preferences. Focus on:
-1. Negative words used ("don't like", "not suitable", etc.)
-2. Property features potentially implied (location, style, environment, etc.)
-3. Mismatches between user's previous preferences and this property
-
-You must respond with ONLY a valid JSON array, without any additional text, explanation, or formatting. The array should follow this exact format:
-[
-  {
-    "preference_type": "implicit",
-    "category": "Style|Environment|Features|...",
-    "value": "specific preference content",
-    "importance": 0.5,
-    "reason": "inference reason",
-    "source_message": "rejection message"
-  }
-]
-
-Example valid response:
-[{"preference_type":"implicit","category":"Transport","value":"close to train station","importance":0.5,"reason":"User complained about distance to station","source_message":"too far from station"}]
-
-If no preferences can be reliably inferred, respond with exactly: []"""),
-        HumanMessage(content=f"Rejection Message: {rejection_message}\nProperty Information: {property_context}")
-    ])
-    
     try:
-        # Parse response
-        result = json.loads(response.content)
-        
-        # Apply these implicit preferences
-        updates = [PreferenceUpdate(**item) for item in result]
-        updated_preferences = {}
-        
-        if updates:
-            updated_preferences = await service.update_user_preferences(session_id, updates)
+        # Process user input and update preferences/search parameters
+        preferences, search_params, ambiguity = await service.process_user_input(session_id, user_message)
         
         return {
-            "preferences": [update.model_dump() for update in updates],
-            "updated_preferences": updated_preferences
+            "preferences": preferences,
+            "search_params": search_params,
+            "ambiguity": ambiguity,
+            "context_type": context_type
         }
     except Exception as e:
-        print(f"Error inferring preferences from rejection: {e}")
-        print(f"Raw response: {response.content}")
-        return {"preferences": [], "updated_preferences": {}}
+        print(f"Error processing preferences: {e}")
+        return {
+            "preferences": {},
+            "search_params": {},
+            "ambiguity": None,
+            "context_type": context_type,
+            "error": str(e)
+        }
 
 @tool
 async def query_database(question: str, context: Optional[str] = None) -> dict:
@@ -383,10 +298,9 @@ search_tool = DuckDuckGoSearchResults()
 tools = [
     search_properties,
     get_property_recommendations,
-    extract_preferences,
-    handle_rejection,
+    process_preferences,
     search_tool,
-    query_database  # Add the new tool
+    query_database
 ]
 tools_by_name = {tool.name: tool for tool in tools}
 llm_with_tools = llm.bind_tools(tools)
@@ -430,21 +344,32 @@ Use Action to run one of the actions available to you - then return PAUSE.
 Observation will be the result of running those actions.
 
 Important Tool Usage Guidelines:
-- Always use `extract_preferences` first when user expresses preferences or requirements
-- Use `search_tool` when you need additional information about:
-  * Property market trends
-  * Suburb information and demographics
-  * School zones and facilities
-  * Local amenities and infrastructure
-  * Recent news about an area or development
-  * Property investment data and analysis
-  * Any other information user might interested in
-- Use `query_database` when you need to answer questions about the suburb database
-- When extracted location is ambiguous (e.g., too large like "Sydney", "North Shore"), ask for clarification.
-- Use `handle_rejection` when user expresses dissatisfaction with a property
-- Always give recommendation about surburb based on user's preference, unless user specify otherwise.
-- Use `search_properties` to find properties matching the search criteria
-- After `search_properties`, use `get_property_recommendations` to get personalized property recommendations
+1. Always use `process_preferences` first when user expresses preferences(Style, Environment, Features, Quality, Layout, Transport, Location, Investment) or requirements(location, price, property type, etc):
+   - This tool will detect any ambiguous information that needs clarification
+   - If ambiguity is detected, STOP and engage with the user to clarify
+   - Present the suggestions and ask the follow-up question provided in the ambiguity info
+   - Only proceed with property search after ambiguity is resolved
+
+2. When handling ambiguous information:
+   - Acknowledge the ambiguity clearly
+   - Present the suggestions in a natural, conversational way
+   - Explain why each suggestion might be suitable
+   - Ask the follow-up question to get clarification
+   - Wait for user's response before proceeding
+
+3. Use `query_database` when user asks about:
+   - Recommend a suburb based on user's requirments
+   - Rental yield or rent income in a suburb
+   - Median house price in a certain area
+   - Property investment potential or historical growth
+   - Suburb comparisons based on income, unemployment, or affluence
+   - Family-friendliness, education, or demographics of a suburb
+   - Distance to city or recommendations based on distance
+   - Market supply (stock on market) or days on market
+
+4. Use `search_tool` when you need additional information from web search
+5. Use `search_properties` only after preferences and search parameters are clear, and location is explicitly mentioned
+6. After `search_properties`, use `get_property_recommendations` for personalized recommendations
 
 When NOT using tools, follow these guidelines for natural language responses:
 1. Provide comprehensive analysis that goes beyond surface-level observations
@@ -498,8 +423,34 @@ async def tool_node(state: Dict[str, Any]) -> AgentMessagesState:
             if tool.name == "search_properties":
                 args["search_params"] = state["search_params"]
         
+        # Execute tool
+        observation = await tool.ainvoke(args)
+        
+        # Special handling for preference processing with ambiguity
+        if tool.name == "process_preferences" and isinstance(observation, dict):
+            if observation.get("ambiguity"):
+                # If ambiguity is detected, don't update state yet
+                result.append(ToolMessage(
+                    content=str(observation),
+                    tool_call_id=tool_call["id"]
+                ))
+                # Return early to wait for user clarification
+                return AgentMessagesState(
+                    messages=state["messages"] + result,
+                    session_id=session_id,
+                    preferences=state["preferences"],
+                    search_params=state["search_params"],
+                    recommendation_history=recommendation_history,
+                    latest_recommendation=latest_recommendation,
+                    available_properties=available_properties
+                )
+            else:
+                # Update state with new preferences and search parameters
+                state["preferences"] = observation.get("preferences", state["preferences"])
+                state["search_params"] = observation.get("search_params", state["search_params"])
+        
         # Special handling for property recommendations
-        if tool.name == "get_property_recommendations":
+        elif tool.name == "get_property_recommendations":
             # Filter out previously recommended properties
             new_properties = [
                 prop for prop in available_properties 
@@ -514,20 +465,7 @@ async def tool_node(state: Dict[str, Any]) -> AgentMessagesState:
                     properties=new_properties,
                     preferences=state["preferences"]
                 )
-        else:
-            # Normal tool execution
-            observation = await tool.ainvoke(args)
-        
-        result.append(ToolMessage(content=str(observation), tool_call_id=tool_call["id"]))
-        
-        # Update state based on tool results
-        if tool.name == "extract_preferences" and isinstance(observation, dict):
-            state["preferences"] = observation.get("updated_preferences", state["preferences"])
-            state["search_params"] = observation.get("updated_search_params", state["search_params"])
-        elif tool.name == "search_properties":
-            # Store the search results in state
-            available_properties = available_properties + observation
-        elif tool.name == "get_property_recommendations":
+            
             # Update latest recommendation and history
             latest_recommendation = observation
             if isinstance(observation, dict):
@@ -535,6 +473,12 @@ async def tool_node(state: Dict[str, Any]) -> AgentMessagesState:
                     prop.listing_id for prop in observation.get("properties", [])
                 ]
                 recommendation_history.extend(new_recommendations)
+        
+        elif tool.name == "search_properties":
+            # Store the search results in state
+            available_properties = available_properties + observation
+        
+        result.append(ToolMessage(content=str(observation), tool_call_id=tool_call["id"]))
     
     return AgentMessagesState(
         messages=state["messages"] + result,

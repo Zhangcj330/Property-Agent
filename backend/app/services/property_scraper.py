@@ -170,10 +170,13 @@ class PropertyScraper:
                              if listing.find('h4', {'data-testid': 'date-text-tag'})
                              else None)
             
-            image_urls = ([img['src'] for img in listing.find_all('img', {'class': 'image-gallery-image'})]
-                        if listing.find_all('img', {'class': 'image-gallery-image'})
-                        else None)
-            
+            image_urls = [sorted([s.strip().split(' ') for s in img.get('srcset').split(',')],
+                            key=lambda x: int(x[1].replace('w', '')),
+                            reverse=True
+                        )[0][0] if img.get('srcset') else img.get('src')
+                        for img in listing.find_all('img', {'class': 'image-gallery-image'})
+                        ] or None
+                        
             agent_name = (listing.find('div', {'data-testid': 'agency-image'}).find('img').get('alt')
                          if listing.find('div', {'data-testid': 'agency-image'})
                          else None)

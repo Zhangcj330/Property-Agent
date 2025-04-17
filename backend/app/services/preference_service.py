@@ -1,30 +1,14 @@
 from typing import Dict, List, Optional, Any, Union, Tuple
-from pydantic import BaseModel
 from datetime import datetime
 import json
 import re
 
 from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
+from langchain_core.messages import HumanMessage, SystemMessage
 
 from app.config import settings
-from app.models import UserPreferences, UserPreference, ChatSession, ChatMessage, PropertySearchRequest
+from app.models import ChatSession, ChatMessage
 from app.services.chat_storage import ChatStorageService
-
-class PreferenceUpdate(BaseModel):
-    """Model for updating preferences"""
-    preference_type: str  # "explicit" or "implicit"
-    category: str  # Style, Environment, Features, etc.
-    value: str
-    importance: float = 0.5
-    reason: Optional[str] = None
-    source_message: Optional[str] = None
-
-class SearchParamUpdate(BaseModel):
-    """Model for updating search parameters"""
-    param_name: str  # location, min_price, max_price, etc.
-    value: Any
-    reason: Optional[str] = None
 
 class PreferenceService:
     """Service class for extracting and managing user preferences"""
@@ -39,140 +23,69 @@ class PreferenceService:
             max_output_tokens=2048
         )
     
-    async def extract_from_context(
+    async def process_user_input(
         self, 
         session_id: str, 
-        recent_message: str
-    ) -> Tuple[List[PreferenceUpdate], List[SearchParamUpdate]]:
-        """Extract user preferences and search parameters from recent message and conversation context"""
+        user_message: str
+    ) -> Tuple[Dict, Dict, Optional[Dict]]:
+        """Process user input to extract and update preferences and search parameters
+        
+        Returns:
+            Tuple containing:
+            - preferences: Dict of updated preferences
+            - search_params: Dict of updated search parameters
+            - ambiguity_info: Optional Dict containing ambiguity information if detected
+        """
         
         # Get session history
         session = await self.chat_storage.get_session(session_id)
         if not session:
-            return [], []
+            session = await self.chat_storage.create_session(session_id)
         
-        # Get current preferences and search parameters
+        # Get current state
         current_preferences = session.preferences or {}
         current_search_params = session.search_params or {}
         
-        # Prepare context (last 5 rounds of dialogue)
+        # Prepare context from conversation history
         context = self._prepare_conversation_context(session.messages)
         
-        # Use LLM to extract preferences and search parameters
-        preferences, search_params = await self._extract_with_llm(
-            context, 
-            recent_message, 
-            current_preferences, 
-            current_search_params
+        # Extract and update preferences and search parameters
+        preferences, search_params, ambiguity = await self._process_with_llm(
+            context=context,
+            user_message=user_message,
+            current_preferences=current_preferences,
+            current_search_params=current_search_params
         )
         
-        return preferences, search_params
-    
-    async def update_user_preferences(
-        self, 
-        session_id: str, 
-        preference_updates: List[PreferenceUpdate]
-    ) -> UserPreferences:
-        """Update user preferences and save to storage"""
-        
-        # Get current preferences
-        session = await self.chat_storage.get_session(session_id)
-        if not session:
-            session = await self.chat_storage.create_session(session_id)
-        
-        current_preferences = session.preferences or {}
-        
-        # Apply updates
-        updated_preferences = self._apply_preference_updates(current_preferences, preference_updates)
-        
-        # Save updated preferences
+        # Save updates to session
         await self.chat_storage.update_session_state(
             session_id=session_id,
-            preferences=updated_preferences,
-            search_params=session.search_params
+            preferences=preferences,
+            search_params=search_params,
         )
         
-        # Integrate batch record preference updates
-        if preference_updates:
-            log_messages = []
-            for update in preference_updates:
-                msg = f"• {update.category}: {update.value} ({update.preference_type})"
-                if update.reason:
-                    msg += f" - {update.reason}"
-                log_messages.append(msg)
-            
-            combined_log = f"Preferences Updated:\n" + "\n".join(log_messages)
-            
-            await self.chat_storage.save_message(
-                session_id, 
-                ChatMessage(
-                    role="system",
-                    content=combined_log,
-                    timestamp=datetime.now()
-                )
-            )
-        
-        return updated_preferences
-    
-    async def update_search_params(
-        self, 
-        session_id: str, 
-        search_param_updates: List[SearchParamUpdate]
-    ) -> Dict:
-        """Update search parameters and save to storage"""
-        
-        # Get current search parameters
-        session = await self.chat_storage.get_session(session_id)
-        if not session:
-            session = await self.chat_storage.create_session(session_id)
-        
-        current_search_params = session.search_params or {}
-        
-        # Apply updates
-        updated_search_params = self._apply_search_param_updates(current_search_params, search_param_updates)
-        
-        # Save updated search parameters
-        await self.chat_storage.update_session_state(
+        # Log updates in chat history
+        await self._log_updates(
             session_id=session_id,
-            preferences=session.preferences,
-            search_params=updated_search_params
+            old_preferences=current_preferences,
+            new_preferences=preferences,
+            old_search_params=current_search_params,
+            new_search_params=search_params,
+            ambiguity=ambiguity
         )
         
-        # Integrate batch record search parameter updates
-        if search_param_updates:
-            log_messages = []
-            for update in search_param_updates:
-                msg = f"• {update.param_name}: {update.value}"
-                if update.reason:
-                    msg += f" - {update.reason}"
-                log_messages.append(msg)
-            
-            combined_log = f"Search Parameters Updated:\n" + "\n".join(log_messages)
-            
-            await self.chat_storage.save_message(
-                session_id, 
-                ChatMessage(
-                    role="system",
-                    content=combined_log,
-                    timestamp=datetime.now()
-                )
-            )
-        
-        return updated_search_params
+        return preferences, search_params, ambiguity
     
     def _prepare_conversation_context(self, messages: List[ChatMessage]) -> str:
-        """Prepare conversation context - ensure getting last 5 rounds of dialogue (each including user and assistant messages)"""
+        """Prepare conversation context from recent messages"""
         if not messages:
             return "No dialogue history"
         
-        # Filter out system messages, only keep user and assistant messages
+        # Get last 5 rounds of user-assistant dialogue
         user_assistant_msgs = [msg for msg in messages if msg.role in ["user", "assistant"]]
-        
-        # Calculate rounds and get last 5 rounds of dialogue
         total_rounds = len(user_assistant_msgs) // 2
         rounds_to_include = min(total_rounds, 5)
         
-        # Get recent N rounds of messages (each round includes 2 messages, user+assistant)
         start_idx = max(0, len(user_assistant_msgs) - (rounds_to_include * 2))
         recent_dialog = user_assistant_msgs[start_idx:]
         
@@ -181,498 +94,321 @@ class PreferenceService:
         current_round = total_rounds - rounds_to_include + 1
         
         for i in range(0, len(recent_dialog), 2):
-            # Ensure we have a pair of messages (user+assistant)
+            context += f"--- Round {current_round} ---\n"
+            context += f"User: {recent_dialog[i].content}\n"
             if i + 1 < len(recent_dialog):
-                context += f"--- Round {current_round} ---\n"
-                context += f"User: {recent_dialog[i].content}\n"
-                context += f"Assistant: {recent_dialog[i+1].content}\n\n"
-                current_round += 1
-            else:
-                # Last may be only user message without assistant reply
-                context += f"--- Round {current_round} ---\n"
-                context += f"User: {recent_dialog[i].content}\n"
+                context += f"Assistant: {recent_dialog[i+1].content}\n"
+            context += "\n"
+            current_round += 1
         
         return context
     
-    async def _extract_with_llm(
+    async def _process_with_llm(
         self, 
         context: str,
-        recent_message: str,
+        user_message: str,
         current_preferences: Dict,
         current_search_params: Dict
-    ) -> Tuple[List[PreferenceUpdate], List[SearchParamUpdate]]:
-        """Use LLM to extract user preferences and search parameters"""
+    ) -> Tuple[Dict, Dict, Optional[Dict]]:
+        """Use LLM to process user input and generate updated preferences and search parameters"""
         
-        # Convert current preferences to readable format
-        current_prefs_str = ""
-        if current_preferences:
-            current_prefs_str = "Current Known Preferences:\n"
-            for category, pref in current_preferences.items():
-                if pref and "preference" in pref and pref["preference"]:
-                    importance = pref.get("importance", 0.5)
-                    importance_text = "High" if importance > 0.7 else ("Medium" if importance > 0.3 else "Low")
-                    current_prefs_str += f"- {category}: {pref['preference']} (Importance: {importance_text})\n"
+        # Format current state
+        current_state = self._format_current_state(current_preferences, current_search_params)
         
-        # Convert current search parameters to readable format
-        current_params_str = ""
-        if current_search_params:
-            current_params_str = "Current Search Parameters:\n"
-            for param, value in current_search_params.items():
-                if value is not None:
-                    current_params_str += f"- {param}: {value}\n"
-        
-        prompt = f"""You are a professional property preference and search requirement analyst. Your task is to analyze conversations and extract both explicit and implicit preferences, as well as specific search parameters.
+        prompt = f"""You are an expert property preference analyst. Your task is to analyze the conversation history and user's latest message to understand their property requirements and preferences.
 
-Key Analysis Areas:
-
-1. User Preferences:
-   A. Explicit Preferences - Directly stated requirements:
-      - Clear statements: "I want...", "I need...", "I'm looking for..."
-      - Direct preferences: "I like modern style", "I prefer quiet areas"
-      
-   B. Implicit Preferences - Inferred from context:
-      - Negative reactions: "too noisy" → preference for quiet
-      - Comparative statements: "better if closer to station" → preference for good transport
-      - Questions about features: "Does it have a garden?" → potential interest in outdoor space
-
-2. Search Parameters:
-   A. Location Parameters:
-      Format: ["NSW-chatswood-2067", "NSW-epping-2121"]
-      
-      Special Handling for Ambiguous Locations:
-      - Large Areas (e.g., "Sydney", "North Shore", "Eastern Suburbs")
-      - Return Format for Ambiguous Locations:
-        {{
-          "param_name": "location",
-          "value": {{
-            "term": "ambiguous_term",
-            "suggestions": ["area1", "area2", "area3"],
-            "context": "area characteristics explanation"
-          }}
-        }}
-      
-      Example Suggestions:
-      - "North Shore": Chatswood (Asian community), Lane Cove (family-friendly)
-      - "Eastern Suburbs": Bondi (beach lifestyle), Double Bay (luxury living)
-
-   B. Other Parameters:
-      - Price Range: min_price, max_price (e.g., 1500000, 2000000)
-      - Bedrooms: min_bedrooms (e.g., 3)
-      - Bathrooms: min_bathrooms (e.g., 2)
-      - Property Type: property_type (e.g., ["house", "apartment"])
-      - Parking: car_parks (e.g., 2)
-      - Land Size: land_size_from, land_size_to (e.g., 300, 800)
-
-3. Importance Level Analysis:
-   A. High Importance (0.7-1.0):
-      - Must-have statements: "must have", "need", "has to be"
-      - Deal-breakers: "won't consider without", "absolutely need"
-      - Strong emphasis: "very important", "essential"
-   
-   B. Medium Importance (0.4-0.6):
-      - Preferences: "would like", "prefer", "want"
-      - General desires: "looking for", "interested in"
-      - Regular statements without strong emphasis
-   
-   C. Low Importance (0.1-0.3):
-      - Optional features: "would be nice", "if possible"
-      - Casual mentions: "maybe", "could have"
-      - Tentative interest: "might be good"
-
-4. Preference Categories:
-   - Style: Architectural and design preferences
-   - Environment: Surrounding area characteristics
-   - Features: Property amenities and facilities
-   - Quality: Construction and maintenance standards
-   - Layout: Space arrangement and floor plan
-   - Transport: Accessibility and commute options
-   - Location: Area and position preferences
-   - Schools: Educational facility access
-   - Community: Neighborhood characteristics
-   - Investment: Investment potential and return on investment
-
-Current Known Information:
-{current_prefs_str}
-{current_params_str}
+Current State:
+{current_state}
 
 Conversation Context:
 {context}
 
-User's Recent Message:
-{recent_message}
+User's Latest Message:
+{user_message}
 
-Provide ONLY a valid JSON response in this format:
+Task:
+Analyze the information and generate a structured representation of the user's current preferences and search parameters. Consider both explicit statements and implicit preferences that can be reasonably inferred from the context.
+
+Key Analysis Points:
+1. Consider the evolution of preferences across the conversation
+2. Look for changes or refinements in requirements
+3. Pay attention to both positive ("I want", "I like") and negative ("I don't want", "too noisy") expressions
+4. Consider the strength of preferences when setting importance values
+5. Only include preferences and parameters that have clear supporting evidence
+6. Preserve existing values unless there's clear indication for change
+7. Detect and handle ambiguous information that needs clarification
+
+Data Structure Requirements:
+
+1. Preferences must follow this exact structure:
 {{
-  "preferences": [
-    {{
-      "preference_type": "explicit|implicit",
-      "category": "Style|Environment|Features|...",
-      "value": "specific preference content",
-      "importance": 0.1-1.0,
-      "reason": "detailed extraction/inference reason"
-    }}
-  ],
-  "search_params": [
-    {{
-      "param_name": "location|min_price|max_price|...",
-      "value": "parameter value",
-      "reason": "parameter extraction reason"
-    }}
-  ]
+  "preferences": {{
+    "Style": {{ "preference": "modern", "importance": 0.8 }},
+    "Environment": {{ "preference": "quiet suburb", "importance": 0.7 }},
+    ...
+  }}
 }}
 
-Example Response:
+Valid preference categories:
+- Style (architectural and design preferences)
+- Environment (area characteristics, noise, greenery)
+- Features (specific property features)
+- Quality (construction and maintenance)
+- Layout (floor plan and space arrangement)
+- Transport (accessibility and commute)
+- Location (specific area preferences)
+- Schools (education facilities)
+- Community (neighborhood characteristics)
+- Investment (potential returns and growth)
+
+2. Search parameters must follow this exact structure:
 {{
-  "preferences": [
-    {{
-      "preference_type": "explicit",
-      "category": "Style",
-      "value": "modern",
-      "importance": 0.6,
-      "reason": "User directly expressed preference for modern style"
-    }},
-    {{
-      "preference_type": "implicit",
-      "category": "Transport",
-      "value": "near_station",
-      "importance": 0.4,
-      "reason": "User asked about distance to train station"
-    }}
-  ],
-  "search_params": [
-    {{
-      "param_name": "location",
-      "value": "NSW-chatswood-2067",
-      "reason": "User specifically mentioned Chatswood area"
-    }},
-    {{
-      "param_name": "min_bedrooms",
-      "value": 3,
-      "reason": "User requested three bedrooms"
-    }}
-  ]
+  "search_params": {{
+    "location": ["NSW-CHATSWOOD-2067", "NSW-MILLSONS-POINT-2061"],
+    "min_price": 1000000,
+    "max_price": 1500000,
+    "min_bedrooms": 3,
+    "min_bathrooms": 2,
+    "property_type": ["house", "apartment"],
+    "car_parks": 1,
+    "land_size_from": 300,
+    "land_size_to": 600
+  }}
 }}
 
-If no information is detected for a category, return empty array []."""
+3. When you detect ambiguous information, include an "ambiguity" field:
+{{
+  "ambiguity": {{
+    "type": "location|price_range|property_type|area_size|features|style",
+    "value": "the ambiguous term or expression",
+    "suggestions": [
+      {{
+        "value": "specific suggestion",
+        "description": "detailed explanation why this might be suitable"
+      }},
+      ...
+    ],
+    "question": "clear follow-up question to help user clarify their preference"
+  }}
+}}
+
+Example Ambiguity Scenarios:
+
+1. Location Ambiguity:
+{{
+  "ambiguity": {{
+    "type": "location",
+    "value": "North Shore",
+    "suggestions": [
+      {{
+        "value": "NSW-CHATSWOOD-2067",
+        "description": "Vibrant hub with Asian influence, excellent shopping, and great schools"
+      }},
+      {{
+        "value": "NSW-LANE-COVE-2066",
+        "description": "Family-friendly area with parks, good schools, and peaceful environment"
+      }}
+    ],
+    "question": "The North Shore has several distinct suburbs. Would you prefer a bustling area like Chatswood with great amenities, or a quieter family-oriented suburb like Lane Cove?"
+  }}
+}}
+
+2. Price Range Ambiguity:
+{{
+  "ambiguity": {{
+    "type": "price_range",
+    "value": "affordable",
+    "suggestions": [
+      {{
+        "value": "800000-1000000",
+        "description": "Entry-level range for houses in western suburbs"
+      }},
+      {{
+        "value": "600000-800000",
+        "description": "Mid-range apartments in middle-ring suburbs"
+      }}
+    ],
+    "question": "Could you specify your budget range? In Sydney, 'affordable' can mean different things in different areas. What's your comfortable price range?"
+  }}
+}}
+
+Important Rules:
+1. ONLY include preferences and parameters that have clear evidence from the conversation
+2. Do NOT generate placeholder or assumed values
+3. For location format, strictly follow: STATE-SUBURB-POSTCODE
+4. Importance values must be between 0.1 (low) and 1.0 (high)
+5. Property types must be lowercase: house, apartment, unit, townhouse, villa, rural
+6. All numeric values must be appropriate for their context
+7. ALWAYS include ambiguity detection when user input is unclear or needs specification
+
+Generate a valid JSON response with the above structure. Include ONLY fields that have clear supporting evidence from the conversation."""
         
         response = self.llm.invoke([
             SystemMessage(content=prompt),
-            HumanMessage(content=f"Context: {context}\nUser's Recent Message: {recent_message}")
+            HumanMessage(content=f"Based on the conversation history and current state shown above, generate the structured representation of the user's current preferences and search parameters. Include ONLY well-supported preferences and parameters, and identify any ambiguous information that needs clarification.")
         ])
         
         try:
-            # Try to parse entire response directly first
-            try:
-                content = response.content
-                # Try to extract JSON from code block if present
-                if "```json" in content:
-                    content = content.split("```json")[1].split("```")[0].strip()
-                elif "```" in content:
-                    content = content.split("```")[1].split("```")[0].strip()
-                
-                result = json.loads(content)
-            except json.JSONDecodeError:
-                # If that fails, try to find any JSON-like structure
-                json_match = re.search(r'{\s*"preferences":\s*\[.*?\],\s*"search_params":\s*\[.*?\]\s*}', response.content, re.DOTALL)
-                if json_match:
-                    json_str = json_match.group(0)
-                    result = json.loads(json_str)
-                else:
-                    print("Could not find valid JSON in response")
-                    return [], []
+            # Extract and parse JSON
+            content = self._extract_json_from_response(response.content)
+            result = json.loads(content)
             
-            # Parse results
-            preferences = [PreferenceUpdate(**item) for item in result.get("preferences", [])]
-            search_params = [SearchParamUpdate(**item) for item in result.get("search_params", [])]
+            # Extract preferences, search parameters, and ambiguity information
+            preferences = result.get("preferences", {})
+            search_params = result.get("search_params", {})
+            ambiguity = result.get("ambiguity")
             
-            return preferences, search_params
+            # Normalize and validate values
+            search_params = self._normalize_search_params(search_params)
+            
+            return preferences, search_params, ambiguity
             
         except Exception as e:
-            print(f"Error parsing update: {e}")
-            print(f"Raw response: {response.content}")
-            return [], []
+            print(f"Error processing LLM response: {e}")
+            return current_preferences, current_search_params, None
     
-    def _apply_preference_updates(
-        self, 
-        current_preferences: Dict, 
-        updates: List[PreferenceUpdate]
-    ) -> Dict:
-        """Apply preference updates to current preferences"""
-        updated_preferences = dict(current_preferences)
+    def _format_current_state(self, preferences: Dict, search_params: Dict) -> str:
+        """Format current preferences and search parameters for LLM prompt"""
+        state = "Current Preferences:\n"
         
-        for update in updates:
-            category = update.category
-            
-            # Check if category exists
-            if category not in updated_preferences:
-                updated_preferences[category] = {}
-            # Update preference with only necessary fields
-            updated_preferences[category] = {
-                "preference": update.value,
-                "importance": update.importance
-            }
-            
-        return updated_preferences
-    
-    def _apply_search_param_updates(
-        self, 
-        current_params: Dict, 
-        updates: List[SearchParamUpdate]
-    ) -> Dict:
-        """Apply search parameter updates to current parameters"""
-        updated_params = dict(current_params)
+        for category, pref in preferences.items():
+            if isinstance(pref, dict) and "preference" in pref:
+                importance = pref.get("importance", 0.5)
+                state += f"- {category}: {pref['preference']} (Importance: {importance})\n"
         
-        for update in updates:
-            param_name = update.param_name
-            
-            # Handle location ambiguity case
-            if param_name == "location_ambiguity":
-                updated_params["location_ambiguity"] = update.value
-                continue
-                
-            # Special handling for some parameters that need array format
-            if param_name in ["location", "property_type"]:
-                # If it's a string, convert to single-element array
-                if isinstance(update.value, str):
-                    value = [update.value]
-                elif isinstance(update.value, list):
-                    value = update.value
-                else:
-                    continue  # Skip invalid values
-                
-                # Keep existing value's uniqueness
-                if param_name in updated_params and updated_params[param_name]:
-                    existing_values = updated_params[param_name]
-                    # Merge and remove duplicates
-                    updated_params[param_name] = list(set(existing_values + value))
-                else:
-                    updated_params[param_name] = value
-            else:
-                # For other parameters, directly update
-                updated_params[param_name] = update.value
+        state += "\nCurrent Search Parameters:\n"
+        for param, value in search_params.items():
+            if value is not None:
+                state += f"- {param}: {value}\n"
         
-        return updated_params
-
-# Tool functions for Agent use
-async def extract_preferences_and_search_params(
-    session_id: str,
-    user_message: str,
-    service: PreferenceService = None
-) -> Dict:
-    """Extract preferences and search parameters from user message
+        return state
     
-    Args:
-        session_id: Session ID
-        user_message: User message content
-        service: Optional PreferenceService instance. If not provided, a new one will be created.
-        
-    Returns:
-        Dictionary containing extracted preferences and search parameters
-    """
-    # Use provided service or create a new one
-    if service is None:
-        service = PreferenceService()
-    
-    try:
-        preferences, search_params = await service.extract_from_context(session_id, user_message)
-        
-        # Update preferences and search parameters
-        updated_preferences = None
-        if preferences:
-            updated_preferences = await service.update_user_preferences(session_id, preferences)
-        
-        updated_search_params = None
-        if search_params:
-            updated_search_params = await service.update_search_params(session_id, search_params)
-        
-        return {
-            "preferences": [pref.dict() for pref in preferences],
-            "search_params": [param.dict() for param in search_params],
-            "updated_preferences": updated_preferences,
-            "updated_search_params": updated_search_params
-        }
-    except Exception as e:
-        print(f"Error in extract_preferences_and_search_params: {str(e)}")
-        return {
-            "preferences": [],
-            "search_params": [],
-            "updated_preferences": None,
-            "updated_search_params": None
-        }
-
-async def get_current_preferences_and_search_params(
-    session_id: str
-) -> Dict:
-    """Get current preferences and search parameters for a session
-    
-    Args:
-        session_id: Session ID
-        
-    Returns:
-        Dictionary containing current preferences and search parameters
-    """
-    service = PreferenceService()
-    session = await service.chat_storage.get_session(session_id)
-    if not session:
-        return {"preferences": {}, "search_params": {}}
-    
-    return {
-        "preferences": session.preferences or {},
-        "search_params": session.search_params or {}
-    }
-
-async def infer_preference_from_rejection(
-    session_id: str,
-    rejection_message: str,
-    property_details: Dict
-) -> Dict:
-    """Infer preferences from rejection message
-    
-    Args:
-        session_id: Session ID
-        rejection_message: User's rejection message, e.g., "This recommendation is not suitable"
-        property_details: Details of the rejected property
-        
-    Returns:
-        Dictionary containing inferred preferences and updated preferences
-    """
-    service = PreferenceService()
-    
-    # Get or create session
-    session = await service.chat_storage.get_session(session_id)
-    if not session:
-        session = await service.chat_storage.create_session(session_id)
-        # Add initial message to provide context
-        await service.chat_storage.save_message(
-            session_id,
-            ChatMessage(
-                role="user",
-                content=rejection_message,
-                timestamp=datetime.now()
-            )
-        )
-    
-    # Prepare context
-    context = service._prepare_conversation_context(session.messages)
-    
-    # Add rejected property information
-    property_context = "Rejected Property Information:\n"
-    for key, value in property_details.items():
-        property_context += f"- {key}: {value}\n"
-    
-    # Rejection-specific prompt
-    prompt = f"""You are a property preference analyst. Convert this rejection message into preferences:
-
-Input: "This house is too noisy and old-fashioned"
-Output: [
-  {{
-    "preference_type": "implicit",
-    "category": "Environment",
-    "value": "quiet_area",
-    "importance": 0.8,
-    "reason": "User rejected property for being too noisy",
-    "source_message": "This house is too noisy and old-fashioned"
-  }},
-  {{
-    "preference_type": "implicit",
-    "category": "Style",
-    "value": "modern",
-    "importance": 0.7,
-    "reason": "User rejected old-fashioned style",
-    "source_message": "This house is too noisy and old-fashioned"
-  }}
-]
-
-Rules:
-1. Convert each complaint into a positive preference
-2. Use high importance (0.7-1.0) for strong rejections
-3. Include all required fields
-4. Return only the JSON array
-
-Now convert this rejection:
-"{rejection_message}"
-
-Property details:
-{property_details}"""
-
-    response = service.llm.invoke([
-        SystemMessage(content=prompt),
-        HumanMessage(content=f"Rejection Message: {rejection_message}\nProperty Information: {property_context}")
-    ])
-    
-    try:
-        content = response.content
-        print(f"Raw LLM response: {content}")  # Debug output
-        
-        # Try to extract JSON from code block if present
+    def _extract_json_from_response(self, content: str) -> str:
+        """Extract JSON from LLM response"""
         if "```json" in content:
             content = content.split("```json")[1].split("```")[0].strip()
         elif "```" in content:
             content = content.split("```")[1].split("```")[0].strip()
         
         # Clean up common formatting issues
-        content = content.replace("'", '"')  # Replace single quotes with double quotes
-        content = re.sub(r',\s*]', ']', content)  # Remove trailing commas
-        content = re.sub(r',\s*}', '}', content)  # Remove trailing commas in objects
+        content = content.replace("'", '"')
+        content = re.sub(r',\s*}', '}', content)
+        content = re.sub(r',\s*]', ']', content)
         
-        # Try to parse the cleaned content
-        try:
-            result = json.loads(content)
-        except json.JSONDecodeError as e1:
-            print(f"Initial JSON parse failed: {e1}")  # Debug output
-            
-            # Try to find any JSON array structure
-            json_match = re.search(r'\[\s*{.*?}\s*\]', content, re.DOTALL)
-            if json_match:
-                json_str = json_match.group(0)
+        return content
+    
+    def _normalize_search_params(self, params: Dict) -> Dict:
+        """Normalize and validate search parameters"""
+        normalized = {}
+        
+        for param, value in params.items():
+            if param == "location":
+                # Ensure location is a list and properly formatted
+                if isinstance(value, str):
+                    value = [value]
+                if isinstance(value, list):
+                    normalized[param] = [
+                        loc.upper() for loc in value 
+                        if isinstance(loc, str) and len(loc.split('-')) == 3
+                    ]
+            elif param == "property_type":
+                # Ensure property_type is a list
+                if isinstance(value, str):
+                    value = [value]
+                if isinstance(value, list):
+                    normalized[param] = [str(t).lower() for t in value]
+            elif param in ["min_price", "max_price", "land_size_from", "land_size_to"]:
+                # Ensure numeric values
                 try:
-                    result = json.loads(json_str)
-                except json.JSONDecodeError as e2:
-                    print(f"JSON array extraction failed: {e2}")  # Debug output
-                    
-                    # Last resort: try to fix common JSON formatting issues
-                    try:
-                        # Replace newlines and extra spaces
-                        json_str = re.sub(r'\s+', ' ', json_str)
-                        # Ensure property names are quoted
-                        json_str = re.sub(r'(\w+):', r'"\1":', json_str)
-                        result = json.loads(json_str)
-                    except json.JSONDecodeError as e3:
-                        print(f"JSON cleanup failed: {e3}")  # Debug output
-                        return {"preferences": [], "updated_preferences": {}}
-            else:
-                print("Could not find valid JSON array in response")  # Debug output
-                return {"preferences": [], "updated_preferences": {}}
+                    normalized[param] = float(value)
+                except (TypeError, ValueError):
+                    continue
+            elif param in ["min_bedrooms", "min_bathrooms", "car_parks"]:
+                # Ensure integer values
+                try:
+                    normalized[param] = int(value)
+                except (TypeError, ValueError):
+                    continue
+            elif param == "location_ambiguity":
+                # Pass through location ambiguity structure
+                normalized[param] = value
         
-        # Validate result structure
-        if not isinstance(result, list):
-            print(f"Invalid result structure. Expected list, got: {type(result)}")  # Debug output
-            return {"preferences": [], "updated_preferences": {}}
+        return normalized
+    
+    async def _log_updates(
+        self,
+        session_id: str,
+        old_preferences: Dict,
+        new_preferences: Dict,
+        old_search_params: Dict,
+        new_search_params: Dict,
+        ambiguity: Optional[Dict] = None
+    ) -> None:
+        """Log preference and search parameter updates to chat history"""
+        updates = []
         
-        # Ensure all required fields are present
-        validated_results = []
-        for item in result:
-            if all(key in item for key in ["preference_type", "category", "value", "importance", "reason", "source_message"]):
-                validated_results.append(item)
-            else:
-                print(f"Skipping invalid preference item: {item}")  # Debug output
+        # Check for preference changes
+        for category, new_pref in new_preferences.items():
+            old_pref = old_preferences.get(category, {})
+            if new_pref != old_pref:
+                updates.append(f"• Updated {category}: {new_pref.get('preference')} "
+                             f"(Importance: {new_pref.get('importance', 0.5):.1f})")
         
-        if not validated_results:
-            print("No valid preferences found after validation")  # Debug output
-            return {"preferences": [], "updated_preferences": {}}
+        # Check for search parameter changes
+        for param, new_value in new_search_params.items():
+            old_value = old_search_params.get(param)
+            if new_value != old_value:
+                updates.append(f"• Updated {param}: {new_value}")
         
-        # Apply these implicit preferences
-        updates = [PreferenceUpdate(**item) for item in validated_results]
-        updated_preferences = {}
+        if updates or ambiguity:
+            log_message = []
+            if updates:
+                log_message.append("I've updated your preferences and search parameters:")
+                log_message.extend(updates)
+            
+            if ambiguity:
+                if updates:
+                    log_message.append("\nHowever, I need some clarification:")
+                log_message.append(ambiguity["question"])
+                log_message.append("\nSome suggestions based on your requirements:")
+                for suggestion in ambiguity["suggestions"]:
+                    log_message.append(f"• {suggestion['value']}: {suggestion['description']}")
+            
+            await self.chat_storage.save_message(
+                session_id,
+                ChatMessage(
+                    role="assistant",
+                    content="\n".join(log_message),
+                    timestamp=datetime.now()
+                )
+            )
+
+# Helper functions for external use
+async def process_user_preferences(
+    session_id: str,
+    user_message: str
+) -> Dict:
+    """Process user message to extract and update preferences and search parameters
+    
+    Args:
+        session_id: Session ID
+        user_message: User message content
         
-        if updates:
-            updated_preferences = await service.update_user_preferences(session_id, updates)
-        
+    Returns:
+        Dictionary containing updated preferences, search parameters, and any ambiguity information
+    """
+    service = PreferenceService()
+    try:
+        preferences, search_params, ambiguity = await service.process_user_input(session_id, user_message)
         return {
-            "preferences": [update.dict() for update in updates],
-            "updated_preferences": updated_preferences
+            "preferences": preferences,
+            "search_params": search_params,
+            "ambiguity": ambiguity
         }
     except Exception as e:
-        print(f"Error inferring preferences from rejection: {str(e)}")  # Enhanced error output
-        print(f"Response content type: {type(response.content)}")  # Debug output
-        return {"preferences": [], "updated_preferences": {}}
+        print(f"Error processing user preferences: {e}")
+        return {
+            "preferences": {},
+            "search_params": {},
+            "ambiguity": None
+        }

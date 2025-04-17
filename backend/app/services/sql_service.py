@@ -100,11 +100,43 @@ class SQLService:
 
     async def generate_sql_query(self, request: SQLQueryRequest) -> str:
         """Generate SQL query based on user question using LLM"""
+        # Get sample data
+        with self._get_connection() as conn:
+            sample_data = []
+            tables = conn.execute(
+                """
+                SELECT table_name 
+                FROM information_schema.tables 
+                WHERE table_schema = 'main'
+                """
+            ).fetchall()
+            
+            for table in tables:
+                table_name = table[0]
+                # Get top 10 rows from each table
+                try:
+                    rows = conn.execute(f"SELECT * FROM {table_name} LIMIT 10").fetchall()
+                    if rows:
+                        columns = [desc[0] for desc in conn.description]
+                        sample_data.append(f"\nSample data from {table_name}:")
+                        # Add column headers
+                        sample_data.append("| " + " | ".join(columns) + " |")
+                        sample_data.append("|" + "|".join(["-" * len(col) for col in columns]) + "|")
+                        # Add row data
+                        for row in rows:
+                            sample_data.append("| " + " | ".join(str(val) for val in row) + " |")
+                except Exception as e:
+                    print(f"Error getting sample data from {table_name}: {e}")
+                    continue
+
         context = f"""
 You are an expert SQL query generator. Your task is to convert natural language questions into SQL queries for a DuckDB database.
 
 Database Schema:
 {request.table_schema or self.table_schema}
+
+Sample Data:
+{"".join(sample_data)}
 
 Additional Context:
 {request.context or ''}
@@ -113,11 +145,12 @@ Rules:
 1. Generate ONLY the raw SQL query, no markdown formatting, no explanations or additional text
 2. Use proper SQL syntax for DuckDB
 3. Always use appropriate table aliases and column references
-4. Include proper JOIN conditions when querying multiple tables
-5. Use appropriate aggregation functions when needed
-6. Limit results to a reasonable number (e.g., LIMIT 10) unless specifically asked for more
-7. Format numbers and dates appropriately
-8. Use clear and descriptive column aliases for computed values
+4. Use appropriate aggregation functions when needed
+5. Limit results to a reasonable number (e.g., LIMIT 10) unless specifically asked for more
+6. Format numbers and dates appropriately
+7. Use clear and descriptive column aliases for computed values
+8. Use the sample data as reference for column values and data patterns
+9. Consider data types and formats shown in the sample data
 
 Question: {request.user_question}
 

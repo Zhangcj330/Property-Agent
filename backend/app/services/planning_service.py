@@ -100,19 +100,6 @@ def get_cached_result(address: str) -> Optional[Dict[str, Any]]:
         print(f"Cache read error: {e}")
         return None
 
-def save_to_cache(address: str, result: Dict[str, Any]) -> None:
-    """Save result to cache"""
-    try:
-        CACHE_DIR.mkdir(exist_ok=True)
-        cache_key = get_cache_key(address)
-        cache_file = CACHE_DIR / f"{cache_key}.json"
-        
-        with open(cache_file, 'w') as f:
-            json.dump(result, f)
-            
-    except Exception as e:
-        print(f"Cache write error: {e}")
-
 def clean_address(address: str) -> str:
     """Clean address by removing everything before and including the '/' character"""
     address = address.lower().strip()
@@ -275,9 +262,6 @@ async def get_planning_info(address: str, force_refresh: bool = False) -> Planni
             return PlanningInfo.model_validate({**cached, "source": "cache"})
     
     result = await get_all_planning_info(address)
-    
-    if not result.error:
-        save_to_cache(address, result.model_dump())
     
     return result
 
