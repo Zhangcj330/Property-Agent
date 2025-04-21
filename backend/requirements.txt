@@ -27,3 +27,5 @@ playwright
 nest-asyncio
 lxml
 duckdb
+IPython
+backoff

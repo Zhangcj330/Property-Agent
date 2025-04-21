@@ -127,16 +127,18 @@ User's Latest Message:
 {user_message}
 
 Task:
-Analyze the information and generate a structured representation of the user's current preferences and search parameters. Consider both explicit statements and implicit preferences that can be reasonably inferred from the context.
+Analyze the information and generate a structured representation of the user's current preferences and search parameters. "preferences" refer to qualitative desires and "search parameters" refer to quantifiable criteria. Consider both explicit statements and implicit preferences that can be reasonably inferred from the context.
 
 Key Analysis Points:
 1. Consider the evolution of preferences across the conversation
 2. Look for changes or refinements in requirements
 3. Pay attention to both positive ("I want", "I like") and negative ("I don't want", "too noisy") expressions
 4. Consider the strength of preferences when setting importance values
-5. Only include preferences and parameters that have clear supporting evidence
+5. Only include qualitative preferences and search parameters quantifiable parameters that have *clear supporting evidence*
 6. Preserve existing values unless there's clear indication for change
-7. Detect and handle ambiguous information that needs clarification
+7. Detect and handle ambiguous statements that needs clarification, for example:
+    - Broad location names (e.g., "Sydney", "North Shore")
+    - Vague price ranges (e.g., "affordable", "expensive")
 
 Data Structure Requirements:
 
@@ -164,70 +166,54 @@ Valid preference categories:
 2. Search parameters must follow this exact structure:
 {{
   "search_params": {{
-    "location": ["NSW-CHATSWOOD-2067", "NSW-MILLSONS-POINT-2061"],
-    "min_price": 1000000,
-    "max_price": 1500000,
-    "min_bedrooms": 3,
-    "min_bathrooms": 2,
-    "property_type": ["house", "apartment"],
-    "car_parks": 1,
-    "land_size_from": 300,
-    "land_size_to": 600
+    "location": ["NSW-CHATSWOOD-2067", "NSW-MILLSONS-POINT-2061"], // List suburbs with state-suburb-postcode format
+    "min_price": 1000000,                 // User's minimum budget, numeric only (no commas)
+    "max_price": 1500000,                 // User's maximum budget, numeric only (no commas)
+    "min_bedrooms": 3,                    // Minimum number of bedrooms
+    "min_bathrooms": 2,                   // Minimum number of bathrooms
+    "property_type": ["house", "apartment"], // Desired property types (e.g., house, apartment, townhouse, duplex)
+    "car_parks": 1,                       // Required number of car parks
+    "land_size_from": 300,                // Minimum land size (sqm)
+    "land_size_to": 600                   // Maximum land size (sqm)
   }}
 }}
 
-3. When you detect ambiguous information, include an "ambiguity" field:
+3. When you detect ambiguous information that *prevents* a parameter from being directly usable in a search, include an "ambiguity" field:
 {{
   "ambiguity": {{
-    "type": "location|price_range|property_type|area_size|features|style",
+    "parameter": "location|price_range|property_type|area_size|features|style",
     "value": "the ambiguous term or expression",
-    "suggestions": [
-      {{
-        "value": "specific suggestion",
-        "description": "detailed explanation why this might be suitable"
-      }},
-      ...
-    ],
-    "question": "clear follow-up question to help user clarify their preference"
+    "reason": "reason for the ambiguity"
+    ]
   }}
 }}
 
 Example Ambiguity Scenarios:
 
-1. Location Ambiguity:
+1. Location Ambiguity: The user's localtion requirements need to be precise to subrub; if not, it is ambiguity
 {{
   "ambiguity": {{
-    "type": "location",
+    "parameter": "location",
     "value": "North Shore",
-    "suggestions": [
-      {{
-        "value": "NSW-CHATSWOOD-2067",
-        "description": "Vibrant hub with Asian influence, excellent shopping, and great schools"
-      }},
-      {{
-        "value": "NSW-LANE-COVE-2066",
-        "description": "Family-friendly area with parks, good schools, and peaceful environment"
-      }}
-    ],
-    "question": "The North Shore has several distinct suburbs. Would you prefer a bustling area like Chatswood with great amenities, or a quieter family-oriented suburb like Lane Cove?"
+    "reason": "North Shore is a broad term that could refer to multiple suburbs",
+    "question": "The North Shore can mean different pockets — some buyers love the harbourside vibe of the Lower North Shore; others lean towards the leafy Upper North Shore for schools and larger blocks. Which of those sounds closer to what you’re picturing?Would you like me to walk you through median prices and recent sales in both areas so you can see where your budget stretches furthest?"
+  }}
+}}
+{{
+  "ambiguity": {{
+    "parameter": "location",
+    "value": "Sydney",
+    "reason": "Could mean the City of Sydney LGA (just the CBD and a handful of inner suburbs) or the entire Greater Sydney metropolitan area, which stretches ~70 km north‑to‑south and west to the Blue Mountains.",
+    "question": "when you say Sydney, are you thinking of the city centre itself (the CBD and surrounding inner suburbs), or would suburbs across Greater Sydney be in scope as well? Are there particular surburb you’ve already ruled in or out?"
   }}
 }}
 
 2. Price Range Ambiguity:
 {{
   "ambiguity": {{
-    "type": "price_range",
+    "parameter": "min_price",
     "value": "affordable",
-    "suggestions": [
-      {{
-        "value": "800000-1000000",
-        "description": "Entry-level range for houses in western suburbs"
-      }},
-      {{
-        "value": "600000-800000",
-        "description": "Mid-range apartments in middle-ring suburbs"
-      }}
-    ],
+    "reason": "affordable is a broad term that could refer to different price ranges in different areas",
     "question": "Could you specify your budget range? In Sydney, 'affordable' can mean different things in different areas. What's your comfortable price range?"
   }}
 }}
@@ -236,9 +222,10 @@ Important Rules:
 1. ONLY include preferences and parameters that have clear evidence from the conversation
 2. Do NOT generate placeholder or assumed values
 3. For location format, strictly follow: STATE-SUBURB-POSTCODE
-4. Importance values must be between 0.1 (low) and 1.0 (high)
-5. Property types must be lowercase: house, apartment, unit, townhouse, villa, rural
-6. All numeric values must be appropriate for their context
+4. If ambiguity is detected, don't update the parameter in search_params
+5. Importance values must be between 0.1 (low) and 1.0 (high)
+6. Property types must be lowercase: house, apartment, unit, townhouse, villa, rural
+7. All numeric values must be appropriate for their context
 7. ALWAYS include ambiguity detection when user input is unclear or needs specification
 
 Generate a valid JSON response with the above structure. Include ONLY fields that have clear supporting evidence from the conversation."""
@@ -247,7 +234,8 @@ Generate a valid JSON response with the above structure. Include ONLY fields tha
             SystemMessage(content=prompt),
             HumanMessage(content=f"Based on the conversation history and current state shown above, generate the structured representation of the user's current preferences and search parameters. Include ONLY well-supported preferences and parameters, and identify any ambiguous information that needs clarification.")
         ])
-        
+        print("LLM Response:")
+        print(response.content)
         try:
             # Extract and parse JSON
             content = self._extract_json_from_response(response.content)
@@ -370,9 +358,6 @@ Generate a valid JSON response with the above structure. Include ONLY fields tha
                 if updates:
                     log_message.append("\nHowever, I need some clarification:")
                 log_message.append(ambiguity["question"])
-                log_message.append("\nSome suggestions based on your requirements:")
-                for suggestion in ambiguity["suggestions"]:
-                    log_message.append(f"• {suggestion['value']}: {suggestion['description']}")
             
             await self.chat_storage.save_message(
                 session_id,

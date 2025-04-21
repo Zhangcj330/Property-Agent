@@ -131,6 +131,7 @@ class SQLService:
 
         context = f"""
 You are an expert SQL query generator. Your task is to convert natural language questions into SQL queries for a DuckDB database.
+In addition to SQL syntax, you must also reason about geographic references in the user's query.
 
 Database Schema:
 {request.table_schema or self.table_schema}

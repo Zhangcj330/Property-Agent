@@ -2,6 +2,7 @@ import os
 import sys
 from pathlib import Path
 import asyncio
+import json
 
 # Add the backend directory to Python path
 backend_dir = Path(__file__).parent.parent.parent
@@ -10,7 +11,6 @@ sys.path.append(str(backend_dir))
 from typing_extensions import Literal
 from typing import List, Dict, Optional, Any
 from datetime import datetime
-import json
 
 from pydantic import BaseModel, Field
 from langchain_core.messages import SystemMessage, HumanMessage, ToolMessage, AIMessage
@@ -196,11 +196,11 @@ async def process_property(result: PropertySearchResponse) -> FirestoreProperty:
 
 @tool
 async def search_properties(search_params: dict) -> List[FirestoreProperty]:
-    """Search for properties based on given criteria.
+    """Search on listing website for properties based on given search parameters.
     
     Args:
-        search_params: Dictionary containing search parameters that will be converted to PropertySearchRequest
-            - location (List[str]): List of locations to search, format: STATE-SUBURB-POSTCODE
+        search_params: Dictionary containing search parameters
+            - location (List[str]): List of locations to search, format: [STATE-SUBURB-POSTCODE]
             - min_price (Optional[float]): Minimum price
             - max_price (Optional[float]): Maximum price
             - min_bedrooms (Optional[int]): Minimum number of bedrooms
@@ -211,7 +211,7 @@ async def search_properties(search_params: dict) -> List[FirestoreProperty]:
             - land_size_to (Optional[float]): Maximum land size in sqm
     
     Returns:
-        List of FirestoreProperty objects containing search results and analysis
+        List of FirestoreProperty objects containing listing properties from the search results. 
     """
     search_request = PropertySearchRequest(**search_params)
     results = await property_scraper.search_properties(search_request, max_results = 5)
@@ -227,16 +227,8 @@ async def search_properties(search_params: dict) -> List[FirestoreProperty]:
         return []
 
 @tool
-async def get_property_recommendations(recommendation_params: Dict[str, Any]) -> PropertyRecommendationResponse:
-    """Get personalized property recommendations based on analyzed properties and user preferences.
-    
-    Note: This tool expects the properties to be available in the state. The properties parameter
-    in recommendation_params is ignored as we use the properties stored in state.
-    
-    Args:
-        recommendation_params: Dictionary containing:
-            - preferences (UserPreferences): User preferences for recommendation
-            - recommendation_history (List[str]): List of previously recommended property listing_ids
+async def get_property_recommendations() -> PropertyRecommendationResponse:
+    """Get personalized property recommendations based on searched properties and user preferences.
     
     Returns:
         PropertyRecommendationResponse containing recommended properties
@@ -245,13 +237,12 @@ async def get_property_recommendations(recommendation_params: Dict[str, Any]) ->
     return PropertyRecommendationResponse(properties=[])
 
 @tool
-async def process_preferences(session_id: str, user_message: str, context_type: str = "normal") -> dict:
+async def process_preferences(session_id: str, user_message: str) -> dict:
     """Process user preferences and search parameters from conversation
     
     Args:
         session_id: str - The ID of the chat session
         user_message: str - The user's message to process
-        context_type: str - Type of context ("normal" or "rejection"). If "rejection", the message is treated as property rejection feedback
         
     Returns:
         dict: A dictionary containing the updated preferences, search parameters, and any ambiguity information
@@ -266,7 +257,6 @@ async def process_preferences(session_id: str, user_message: str, context_type: 
             "preferences": preferences,
             "search_params": search_params,
             "ambiguity": ambiguity,
-            "context_type": context_type
         }
     except Exception as e:
         print(f"Error processing preferences: {e}")
@@ -274,7 +264,6 @@ async def process_preferences(session_id: str, user_message: str, context_type: 
             "preferences": {},
             "search_params": {},
             "ambiguity": None,
-            "context_type": context_type,
             "error": str(e)
         }
 
@@ -344,20 +333,17 @@ Use Action to run one of the actions available to you - then return PAUSE.
 Observation will be the result of running those actions.
 
 Important Tool Usage Guidelines:
-1. Always use `process_preferences` first when user expresses preferences(Style, Environment, Features, Quality, Layout, Transport, Location, Investment) or requirements(location, price, property type, etc):
-   - This tool will detect any ambiguous information that needs clarification
+1. *Must* use `process_preferences` in the following situations:
+   - When the user expresses preferences (e.g., Style, Environment, Features, Quality, Layout, Transport, Location, Investment) or requirements (e.g., location, price, property type).
+   - When the user accepts a suggestion based on the latest conversation.
+   - When the new conversation content contains additional or updated preference information.
+   After using `process_preferences`, think about the suggestions, utilized the "search_tool" or "query_database" to get the best answer
    - If ambiguity is detected, STOP and engage with the user to clarify
-   - Present the suggestions and ask the follow-up question provided in the ambiguity info
+   - ask the follow-up question provided in the ambiguity info
    - Only proceed with property search after ambiguity is resolved
+   - proactively help user to find suburbs use `query_database` and `search_tool`
 
-2. When handling ambiguous information:
-   - Acknowledge the ambiguity clearly
-   - Present the suggestions in a natural, conversational way
-   - Explain why each suggestion might be suitable
-   - Ask the follow-up question to get clarification
-   - Wait for user's response before proceeding
-
-3. Use `query_database` when user asks about:
+2. Use `query_database` when user asks about:
    - Recommend a suburb based on user's requirments
    - Rental yield or rent income in a suburb
    - Median house price in a certain area
@@ -367,9 +353,10 @@ Important Tool Usage Guidelines:
    - Distance to city or recommendations based on distance
    - Market supply (stock on market) or days on market
 
-4. Use `search_tool` when you need additional information from web search
-5. Use `search_properties` only after preferences and search parameters are clear, and location is explicitly mentioned
-6. After `search_properties`, use `get_property_recommendations` for personalized recommendations
+3. Use `search_tool` when you need additional information from web search
+4. Use `search_properties` after preferences and search parameters are clear, especially location
+    - before using this tool, ask the user to clarify all perference and search parameters. Confirm whether they'd like to add or adjust any criteria in their property search
+5. After `search_properties`, *Must* use `get_property_recommendations` for personalized recommendations
 
 When NOT using tools, follow these guidelines for natural language responses:
 1. Provide comprehensive analysis that goes beyond surface-level observations
@@ -382,9 +369,21 @@ When NOT using tools, follow these guidelines for natural language responses:
 8. Offer thoughtful suggestions while respecting the collaborative nature of the conversation
 9. Connect individual property features to broader lifestyle and investment considerations
 10. Maintain a professional yet approachable tone that builds trust
+11. proactively ask users to clarify their preferences and search parameters
+12. proactively ask user if they need help on provide suburb information. if so, use `query_database` to get the information. 
+13. When making a recommendation, always provide: Specific data or evidence and sources or references for the evidence provided.
 
-DO NOT reply in plain text about what you "plan" or "will" do.
+DO NOT reply in plain text about what you "plan" or "will" do. 
+Do not mention the tool you are using in your response.
 
+
+previous user's preferences: 
+{state["preferences"]}
+
+previous user's requirements:
+{state["search_params"]}
+
+conversation context:
 {context}
 """
             )
@@ -417,6 +416,10 @@ async def tool_node(state: Dict[str, Any]) -> AgentMessagesState:
         tool = tools_by_name[tool_call["name"]]
         args = tool_call["args"]
         
+        # Add tool usage logging
+        print(f"\n🔧 Using tool: {tool.name}")
+        print(f"Arguments: {json.dumps(args, indent=2)}")
+        
         # Add session_id and other state info to tool args
         if isinstance(args, dict):
             args["session_id"] = session_id
@@ -426,8 +429,17 @@ async def tool_node(state: Dict[str, Any]) -> AgentMessagesState:
         # Execute tool
         observation = await tool.ainvoke(args)
         
+        # Log tool result (truncated for readability)
+        result_str = str(observation)
+        truncated_result = result_str[:500] + "..." if len(result_str) > 500 else result_str
+        print(f"Result: {truncated_result}\n")
+        
         # Special handling for preference processing with ambiguity
         if tool.name == "process_preferences" and isinstance(observation, dict):
+            # Update state with new preferences and search parameters
+            state["preferences"] = observation.get("preferences", state["preferences"])
+            state["search_params"] = observation.get("search_params", state["search_params"])
+    
             if observation.get("ambiguity"):
                 # If ambiguity is detected, don't update state yet
                 result.append(ToolMessage(
@@ -444,11 +456,7 @@ async def tool_node(state: Dict[str, Any]) -> AgentMessagesState:
                     latest_recommendation=latest_recommendation,
                     available_properties=available_properties
                 )
-            else:
-                # Update state with new preferences and search parameters
-                state["preferences"] = observation.get("preferences", state["preferences"])
-                state["search_params"] = observation.get("search_params", state["search_params"])
-        
+
         # Special handling for property recommendations
         elif tool.name == "get_property_recommendations":
             # Filter out previously recommended properties

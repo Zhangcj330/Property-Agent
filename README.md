@@ -33,7 +33,7 @@ This system is a chatbot-powered property recommendation engine that uses Large 
 ### Installation Steps
 1. Clone the repository
 ```bash
-git clone https://github.com/Zhangcj330/valuation-model-UI.git
+git clone https://github.com/Zhangcj330/Property-Agent.git
 cd Property-Agent
 ```
 
