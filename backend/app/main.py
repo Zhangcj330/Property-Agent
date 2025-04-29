@@ -184,3 +184,21 @@ async def remove_saved_property(
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.get(f"{v1_prefix}/conversation/{{session_id}}", tags=["Agent"])
+async def get_conversation_history(session_id: str):
+    """Get all conversation messages for a session (for chat window rendering)"""
+    try:
+        chat_storage = ChatStorageService()
+        session = await chat_storage.get_session(session_id)
+        if not session:
+            raise HTTPException(status_code=404, detail="Session not found")
+        # 返回消息列表，按时间排序
+        messages = sorted(session.messages, key=lambda m: m.timestamp)
+        return {
+            "session_id": session_id,
+            "messages": messages
+        }
+    except Exception as e:
+        logger.error(f"Error in get_conversation_history: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"An error occurred while fetching conversation: {str(e)}")
