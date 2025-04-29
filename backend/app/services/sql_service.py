@@ -11,9 +11,9 @@ from contextlib import contextmanager
 class SQLQueryRequest(BaseModel):
     """Request model for SQL query generation"""
     user_question: str
-    context: Optional[str] = None
     table_schema: Optional[str] = None
-
+    filters: Optional[Dict[str, Any]] = None
+    
 class SQLQueryResponse(BaseModel):
     """Response model for SQL query execution"""
     query: str
@@ -140,7 +140,7 @@ Sample Data:
 {"".join(sample_data)}
 
 Additional Context:
-{request.context or ''}
+{request.filters or ''}
 
 Rules:
 1. Generate ONLY the raw SQL query, no markdown formatting, no explanations or additional text
@@ -208,12 +208,12 @@ SQL Query:
                 error=str(e)
             )
 
-    async def process_question(self, question: str, context: Optional[str] = None) -> SQLQueryResponse:
+    async def process_question(self, question: str, filters: Optional[Dict[str, Any]] = None) -> SQLQueryResponse:
         """Process a natural language question and return query results"""
         # Generate query
         query = await self.generate_sql_query(SQLQueryRequest(
             user_question=question,
-            context=context
+            filters=filters
         ))
         
         # Execute query

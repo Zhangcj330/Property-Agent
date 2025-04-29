@@ -82,6 +82,7 @@ class PropertyMetadata(BaseModel):
     updated_at: datetime = Field(default_factory=datetime.now)
     source: Optional[str] = "scraper"
     status: Optional[str] = "active"  # active, sold, withdrawn, etc.
+    session_id: Optional[str] = None  # Added for session tracking
 
 class InvestmentInfo(BaseModel):
     """Investment metrics for a property"""
@@ -285,4 +286,10 @@ class ChatSession(BaseModel):
     last_active: datetime = Field(default_factory=datetime.now)
     preferences: Optional[Dict] = Field(default=None, description="用户偏好")
     search_params: Optional[Dict] = Field(default=None, description="搜索参数")
-    
+
+class SavedProperties(BaseModel):
+    """Model for storing saved properties for a session"""
+    session_id: str
+    properties: List[PropertyWithRecommendation] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=datetime.now)
+    updated_at: datetime = Field(default_factory=datetime.now)

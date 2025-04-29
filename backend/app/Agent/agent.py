@@ -9,7 +9,7 @@ backend_dir = Path(__file__).parent.parent.parent
 sys.path.append(str(backend_dir))
 
 from typing_extensions import Literal
-from typing import List, Dict, Optional, Any
+from typing import List, Dict, Optional, Any, Annotated
 from datetime import datetime
 
 from pydantic import BaseModel, Field
@@ -195,28 +195,46 @@ async def process_property(result: PropertySearchResponse) -> FirestoreProperty:
     return firestore_property
 
 @tool
-async def search_properties(search_params: dict) -> List[FirestoreProperty]:
+async def search_properties(
+    location: Annotated[List[str], Field(description="List of locations to search, format: [STATE-SUBURB-POSTCODE, STATE-SUBURB-POSTCODE, ...]")],
+    min_price: Annotated[Optional[float], Field(description="Minimum price")] = None,
+    max_price: Annotated[Optional[float], Field(description="Maximum price")] = None,
+    min_bedrooms: Annotated[Optional[int], Field(description="Minimum number of bedrooms")] = None,
+    min_bathrooms: Annotated[Optional[int], Field(description="Minimum number of bathrooms")] = None,
+    property_type: Annotated[Optional[List[str]], Field(description="List of property types (house, apartment, unit, townhouse, villa, rural)")] = None,
+    car_parks: Annotated[Optional[int], Field(description="Number of car parks")] = None,
+    land_size_from: Annotated[Optional[float], Field(description="Minimum land size in sqm")] = None,
+    land_size_to: Annotated[Optional[float], Field(description="Maximum land size in sqm")] = None
+) -> List[FirestoreProperty]:
     """Search on listing website for properties based on given search parameters.
     
     Args:
-        search_params: Dictionary containing search parameters
-            - location (List[str]): List of locations to search, format: [STATE-SUBURB-POSTCODE]
-            - min_price (Optional[float]): Minimum price
-            - max_price (Optional[float]): Maximum price
-            - min_bedrooms (Optional[int]): Minimum number of bedrooms
-            - min_bathrooms (Optional[int]): Minimum number of bathrooms
-            - property_type (Optional[List[str]]): List of property types
-            - car_parks (Optional[int]): Number of car parks
-            - land_size_from (Optional[float]): Minimum land size in sqm
-            - land_size_to (Optional[float]): Maximum land size in sqm
+        location (List[str]): List of locations to search, format: [STATE-SUBURB-POSTCODE, STATE-SUBURB-POSTCODE, ...]
+        min_price (Optional[float]): Minimum price
+        max_price (Optional[float]): Maximum price
+        min_bedrooms (Optional[int]): Minimum number of bedrooms
+        min_bathrooms (Optional[int]): Minimum number of bathrooms
+        property_type (Optional[List[str]]): List of property types (house, apartment, unit, townhouse, villa, rural)
+        car_parks (Optional[int]): Number of car parks
+        land_size_from (Optional[float]): Minimum land size in sqm
+        land_size_to (Optional[float]): Maximum land size in sqm
     
     Returns:
         List of FirestoreProperty objects containing listing properties from the search results. 
     """
+    search_params = {
+        "location": location,
+        "min_price": min_price,
+        "max_price": max_price,
+        "min_bedrooms": min_bedrooms,
+        "min_bathrooms": min_bathrooms,
+        "property_type": property_type,
+        "car_parks": car_parks,
+        "land_size_from": land_size_from,
+        "land_size_to": land_size_to
+    }
     search_request = PropertySearchRequest(**search_params)
-    results = await property_scraper.search_properties(search_request, max_results = 5)
-    
-    # Process all properties concurrently
+    results = await property_scraper.search_properties(search_request, max_results=5)
     try:
         firestore_properties = await asyncio.gather(
             *[process_property(result) for result in results]
@@ -227,8 +245,10 @@ async def search_properties(search_params: dict) -> List[FirestoreProperty]:
         return []
 
 @tool
-async def get_property_recommendations() -> PropertyRecommendationResponse:
-    """Get personalized property recommendations based on searched properties and user preferences.
+async def recommend_from_available_properties() -> PropertyRecommendationResponse:
+    """Recommend the best properties from the current available_properties list in state, based on user preferences.
+    
+    Precondition: This tool should only be used if the state['available_properties'] is not empty. It will generate recommendations from the properties that have just been searched and are available in the current session state.
     
     Returns:
         PropertyRecommendationResponse containing recommended properties
@@ -238,61 +258,71 @@ async def get_property_recommendations() -> PropertyRecommendationResponse:
 
 @tool
 async def process_preferences(session_id: str, user_message: str) -> dict:
-    """Process user preferences and search parameters from conversation
+    """Update user preferences and search parameters based on user's conversation
     
     Args:
         session_id: str - The ID of the chat session
         user_message: str - The user's message to process
         
     Returns:
-        dict: A dictionary containing the updated preferences, search parameters, and any ambiguity information
+        dict: A dictionary containing the updated preferences, search parameters
     """
     service = PreferenceService()
     
     try:
         # Process user input and update preferences/search parameters
-        preferences, search_params, ambiguity = await service.process_user_input(session_id, user_message)
+        preferences, search_params = await service.process_user_input(session_id, user_message)
         
         return {
             "preferences": preferences,
-            "search_params": search_params,
-            "ambiguity": ambiguity,
+            "search_params": search_params
         }
     except Exception as e:
         print(f"Error processing preferences: {e}")
         return {
             "preferences": {},
             "search_params": {},
-            "ambiguity": None,
             "error": str(e)
         }
-
 @tool
-async def query_database(question: str, context: Optional[str] = None) -> dict:
-    """Query the suburb database using natural language
+async def search_suburb(
+    question: str,
+    filters: Optional[Dict[str, Any]] = None
+) -> dict:
+    """Help user to find the suburb based on their preferences
     
     Args:
         question: str - The natural language question to query the database
-        context: Optional[str] - Additional context to help generate the SQL query
+        filters: Optional[Dict[str, Any]] = None - Dictionary of filter conditions for suburb search
+                Supported filters:
+                - state: str - State abbreviation (e.g., "NSW", "VIC")
+                - min_price/max_price: float - Price range for properties
+                - min_rental_yield/max_rental_yield: float - Rental yield percentage
+                - min_growth/max_growth: float - Property value growth rate
+                - distance_to_cbd: float - Maximum distance to CBD in km
+                - min_income/max_income: float - Weekly household income range
+                - family_percentage: float - Percentage of family households
+                - vacancy_rate: float - Property vacancy rate
+                - days_on_market: int - Average days properties stay on market
     
     Returns:
         dict: A dictionary containing the query, results and any error messages
     """
-    response = await sql_service.process_question(question, context)
+    response = await sql_service.process_question(question, filters=filters)
     return response.model_dump()
 
-search_tool = DuckDuckGoSearchResults()
+web_search = DuckDuckGoSearchResults()
 
 # Augment the LLM with tools
 tools = [
     search_properties,
-    get_property_recommendations,
+    recommend_from_available_properties,
     process_preferences,
-    search_tool,
-    query_database
+    web_search,
+    search_suburb
 ]
 tools_by_name = {tool.name: tool for tool in tools}
-llm_with_tools = llm.bind_tools(tools)
+llm_with_tools = llm.bind_tools(tools, tool_choice="auto")
 
 async def get_conversation_context(session_id: str) -> str:
     """Generate context summary from conversation history in Firestore"""
@@ -302,7 +332,7 @@ async def get_conversation_context(session_id: str) -> str:
     
     context = "\nPrevious conversation context:\n"
     # Get last 5 messages
-    recent_messages = session.messages[-5:]
+    recent_messages = session.messages[-10:]
     for msg in recent_messages:
         context += f"- {msg.role}: {msg.content}\n"
     return context
@@ -323,8 +353,7 @@ async def llm_call(state: dict) -> AgentMessagesState:
             SystemMessage(
 content=f"""
 You are an intelligent property agent assistant that helps users find and analyze properties, answer questions about property market, suburbs, and related information.
-
-Your job is to IMMEDIATELY use provided tools to fulfill user requests. 
+Begin by asking the user to clarify their motivation: are they seeking an investment property or purchasing a home to live in?
 
 You run in a loop of Thought, Action, PAUSE, Observation.
 At the end of the loop you output an Answer
@@ -334,29 +363,25 @@ Observation will be the result of running those actions.
 
 Important Tool Usage Guidelines:
 1. *Must* use `process_preferences` in the following situations:
-   - When the user expresses preferences (e.g., Style, Environment, Features, Quality, Layout, Transport, Location, Investment) or requirements (e.g., location, price, property type).
-   - When the user accepts a suggestion based on the latest conversation.
+   - When the user expresses preferences (location, price, property type, Style, Environment, Features, Quality, Layout, Transport, Location, Investment).
+   - When the user accepts suggestions based on the latest conversation.
    - When the new conversation content contains additional or updated preference information.
-   After using `process_preferences`, think about the suggestions, utilized the "search_tool" or "query_database" to get the best answer
-   - If ambiguity is detected, STOP and engage with the user to clarify
-   - ask the follow-up question provided in the ambiguity info
-   - Only proceed with property search after ambiguity is resolved
-   - proactively help user to find suburbs use `query_database` and `search_tool`
 
-2. Use `query_database` when user asks about:
-   - Recommend a suburb based on user's requirments
-   - Rental yield or rent income in a suburb
-   - Median house price in a certain area
-   - Property investment potential or historical growth
-   - Suburb comparisons based on income, unemployment, or affluence
-   - Family-friendliness, education, or demographics of a suburb
-   - Distance to city or recommendations based on distance
-   - Market supply (stock on market) or days on market
+2. Use `search_suburb` when recommend a suburb based on user's preferences
+   Please Heuristically and conversationally guide the user in an open-ended way to describe their property investment preferences, 
+   including budget, preferred location (states, cities), investment potential, historical growth, rental yield, family-friendliness, average income, 
+   unemployment, demographics, affluence, and days on market, distance to city center. 
+   Let the user answer freely. Extract as many preferences as possible from the user's natural language response.
 
-3. Use `search_tool` when you need additional information from web search
-4. Use `search_properties` after preferences and search parameters are clear, especially location
+3. Use `web_search` when you need additional information from web search, like school, hospital, train station, shopping center, etc.
+
+4. Use `search_properties` after preferences and search parameters are clear, especially location make sure format is correct.
+    - never ask user to provide postcode, search web for postcode if you need it.
     - before using this tool, ask the user to clarify all perference and search parameters. Confirm whether they'd like to add or adjust any criteria in their property search
-5. After `search_properties`, *Must* use `get_property_recommendations` for personalized recommendations
+    - proactively guide user to find suburbs use `search_suburb` and `web_search` when user does not have a strong location preference
+
+5. After `search_properties`, *Must* use `recommend_from_available_properties` for personalized recommendations
+
 
 When NOT using tools, follow these guidelines for natural language responses:
 1. Provide comprehensive analysis that goes beyond surface-level observations
@@ -370,8 +395,9 @@ When NOT using tools, follow these guidelines for natural language responses:
 9. Connect individual property features to broader lifestyle and investment considerations
 10. Maintain a professional yet approachable tone that builds trust
 11. proactively ask users to clarify their preferences and search parameters
-12. proactively ask user if they need help on provide suburb information. if so, use `query_database` to get the information. 
+12. proactively ask user if they need help on provide suburb information. if so, use `search_suburb` to get the information. 
 13. When making a recommendation, always provide: Specific data or evidence and sources or references for the evidence provided.
+14. If ambiguity is detected, STOP and engage with the user to clarify
 
 DO NOT reply in plain text about what you "plan" or "will" do. 
 Do not mention the tool you are using in your response.
@@ -382,6 +408,9 @@ previous user's preferences:
 
 previous user's requirements:
 {state["search_params"]}
+
+available properties:
+{state["available_properties"]}
 
 conversation context:
 {context}
@@ -423,8 +452,6 @@ async def tool_node(state: Dict[str, Any]) -> AgentMessagesState:
         # Add session_id and other state info to tool args
         if isinstance(args, dict):
             args["session_id"] = session_id
-            if tool.name == "search_properties":
-                args["search_params"] = state["search_params"]
         
         # Execute tool
         observation = await tool.ainvoke(args)
@@ -458,7 +485,7 @@ async def tool_node(state: Dict[str, Any]) -> AgentMessagesState:
                 )
 
         # Special handling for property recommendations
-        elif tool.name == "get_property_recommendations":
+        elif tool.name == "recommend_from_available_properties":
             # Filter out previously recommended properties
             new_properties = [
                 prop for prop in available_properties 
@@ -487,6 +514,14 @@ async def tool_node(state: Dict[str, Any]) -> AgentMessagesState:
             available_properties = available_properties + observation
         
         result.append(ToolMessage(content=str(observation), tool_call_id=tool_call["id"]))
+    
+    # Update recommendation state in chat storage
+    await chat_storage.update_recommendation_state(
+        session_id=session_id,
+        recommendation_history=recommendation_history,
+        latest_recommendation=latest_recommendation.model_dump() if latest_recommendation else None,
+        available_properties=available_properties
+    )
     
     return AgentMessagesState(
         messages=state["messages"] + result,
@@ -532,4 +567,34 @@ agent = agent_builder.compile()
 # Show the agent graph
 display(Image(agent.get_graph(xray=True).draw_mermaid_png()))
 
+"""
+You must ask the user a structured series of questions to fully understand their intent and preferences.
+Begin by asking the user to clarify their motivation: are they seeking an investment property or purchasing a home to live in?
 
+Branch based on the answer:
+If the user says **investment**:
+Ask these questions step by step:
+1. What is your primary investment goal? (e.g., capital growth, rental yield, or both)
+2. What is your maximum budget?
+3. Do you have a minimum expected rental yield? (e.g., 4.5% or higher)
+4. Are there specific regions or towns you're interested in? (e.g., any particular state, LGA, suburb)
+    if user does not a specific suburb, then continue asking question to get the information for search_suburb. if user provide a suburb, then use `search_suburb` to get the information.
+5. What is the maximum distance from the town center you're comfortable with? (e.g., 15 km)
+6. Which local economic features are important to you? (e.g., infrastructure development, population growth, job diversity in sectors like health or education)
+7. Are there any areas or types of locations you'd like to avoid? (e.g., tourist towns, affluent suburbs, remote regions)
+after asking all the questions, use `search_properties` to get the properties.
+
+If the user says **home buyer**:
+As an outstanding real estate agent helping buyers select their own homes, you should guide users to focus on the following core directions
+Make sure to understand both the basic conditions of the buyers and uncover their potential true needs
+1. Motivation and Timeline
+2. Budget and Financial Framework
+3. Location Preferences
+    if user does not a specific suburb, then continue asking question to get the information for search_suburb. if user provide a suburb, then use `search_suburb` to get the information.
+4. Schools and Family Planning
+5. Property Type and Functional Needs
+6. Lifestyle and Environmental Preferences
+7. Property Condition and Style
+8. Must-Haves and Deal Breakers
+
+"""

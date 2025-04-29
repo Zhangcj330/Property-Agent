@@ -114,6 +114,38 @@ class ChatStorageService:
             print(f"Error in update_session_state: {str(e)}")
             raise
 
+    async def update_recommendation_state(
+        self,
+        session_id: str,
+        recommendation_history: Optional[List[str]] = None,
+        latest_recommendation: Optional[Dict] = None,
+        available_properties: Optional[List[Dict]] = None
+    ):
+        """更新会话中的推荐相关状态
+        
+        Args:
+            session_id: 会话ID
+            recommendation_history: 可选，已推荐过的房产ID列表
+            latest_recommendation: 可选，最新的推荐结果
+            available_properties: 可选，当前可用的房产列表
+        """
+        try:
+            session_ref = self.sessions_collection.document(session_id)
+            update_data = {"last_active": datetime.now()}
+            
+            if recommendation_history is not None:
+                update_data["recommendation_history"] = recommendation_history
+            if latest_recommendation is not None:
+                update_data["latest_recommendation"] = latest_recommendation
+            if available_properties is not None:
+                update_data["available_properties"] = [prop.model_dump() for prop in available_properties]
+                
+            session_ref.update(update_data)
+            
+        except Exception as e:
+            print(f"Error in update_recommendation_state: {str(e)}")
+            raise
+
     async def clear_session(self, session_id: str):
         """删除会话"""
         try:

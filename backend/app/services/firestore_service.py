@@ -1,6 +1,6 @@
-from typing import List, Optional, Dict, Union
+from typing import List, Optional, Dict, Union, Tuple
 from google.cloud import firestore
-from app.models import PropertySearchResponse, FirestoreProperty, InvestmentInfo, PlanningInfo
+from app.models import PropertySearchResponse, FirestoreProperty, InvestmentInfo, PlanningInfo, PropertyWithRecommendation
 from app.services.image_processor import PropertyAnalysis
 from app.config import settings
 from datetime import datetime
@@ -10,6 +10,7 @@ class FirestoreService:
         # Initialize with credentials dictionary
         self.db = firestore.Client.from_service_account_info(settings.FIREBASE_CONFIG)
         self.properties_collection = self.db.collection('properties')
+        self.saved_properties_collection = self.db.collection('saved_properties')
 
     async def save_property(self, property_data: Union[PropertySearchResponse, FirestoreProperty]) -> str:
         """Save or update a property listing
@@ -85,13 +86,6 @@ class FirestoreService:
             print(f"Error retrieving property: {str(e)}")
             raise
 
-    async def list_properties(self, 
-        filters: Optional[Dict] = None, 
-        limit: int = 10
-    ) -> List[FirestoreProperty]:
-        """List properties with optional filters"""
-        pass
-
     async def delete_property(self, listing_id: str) -> bool:
         """Delete a property"""
         try:
@@ -99,4 +93,131 @@ class FirestoreService:
             return True
         except Exception as e:
             print(f"Error deleting property: {str(e)}")
+            raise
+
+    async def save_property_to_session(
+        self, 
+        session_id: str, 
+        property_with_recommendation: PropertyWithRecommendation
+    ) -> bool:
+        """Save a property to a session's saved properties
+        
+        Args:
+            session_id: The session ID
+            property_with_recommendation: The property with its recommendation info
+            
+        Returns:
+            bool: True if successful
+        """
+        try:
+            # Get or create saved properties document
+            doc_ref = self.saved_properties_collection.document(session_id)
+            doc = doc_ref.get()
+            
+            if doc.exists:
+                # Update existing saved properties
+                saved_data = doc.to_dict()
+                saved_properties = [
+                    PropertyWithRecommendation(**p) 
+                    for p in saved_data.get('properties', [])
+                ]
+                
+                # Check if property already exists
+                for i, prop in enumerate(saved_properties):
+                    if prop.property.listing_id == property_with_recommendation.property.listing_id:
+                        # Update existing property
+                        saved_properties[i] = property_with_recommendation
+                        break
+                else:
+                    # Add new property
+                    saved_properties.append(property_with_recommendation)
+                
+                # Update document
+                doc_ref.update({
+                    'properties': [p.model_dump() for p in saved_properties],
+                    'updated_at': datetime.now()
+                })
+            else:
+                # Create new saved properties document
+                doc_ref.set({
+                    'session_id': session_id,
+                    'properties': [property_with_recommendation.model_dump()],
+                    'created_at': datetime.now(),
+                    'updated_at': datetime.now()
+                })
+            
+            return True
+            
+        except Exception as e:
+            print(f"Error saving property to session: {str(e)}")
+            raise
+
+    async def get_saved_properties(self, session_id: str) -> List[PropertyWithRecommendation]:
+        """Get saved properties for a session
+        
+        Args:
+            session_id: The session ID
+            
+        Returns:
+            List[PropertyWithRecommendation]: List of saved properties with recommendations
+        """
+        try:
+            # Get saved properties document
+            doc_ref = self.saved_properties_collection.document(session_id)
+            doc = doc_ref.get()
+            
+            if not doc.exists:
+                return []
+                
+            saved_data = doc.to_dict()
+            return [
+                PropertyWithRecommendation(**p) 
+                for p in saved_data.get('properties', [])
+            ]
+            
+        except Exception as e:
+            print(f"Error getting saved properties: {str(e)}")
+            raise
+
+    async def remove_saved_property(self, session_id: str, property_id: str) -> bool:
+        """Remove a property from a session's saved properties
+        
+        Args:
+            session_id: The session ID
+            property_id: The property listing ID to remove
+            
+        Returns:
+            bool: True if successful
+        """
+        try:
+            doc_ref = self.saved_properties_collection.document(session_id)
+            doc = doc_ref.get()
+            
+            if not doc.exists:
+                return False
+                
+            saved_data = doc.to_dict()
+            saved_properties = [
+                PropertyWithRecommendation(**p) 
+                for p in saved_data.get('properties', [])
+            ]
+            
+            # Filter out the property to remove
+            updated_properties = [
+                p for p in saved_properties 
+                if p.property.listing_id != property_id
+            ]
+            
+            if len(updated_properties) != len(saved_properties):
+                # Property was found and removed
+                doc_ref.update({
+                    'properties': [p.model_dump() for p in updated_properties],
+                    'updated_at': datetime.now()
+                })
+                return True
+            
+            return False
+            
+        except Exception as e:
+            print(f"Error removing saved property: {str(e)}")
             raise 

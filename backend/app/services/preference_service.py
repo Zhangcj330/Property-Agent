@@ -34,7 +34,6 @@ class PreferenceService:
             Tuple containing:
             - preferences: Dict of updated preferences
             - search_params: Dict of updated search parameters
-            - ambiguity_info: Optional Dict containing ambiguity information if detected
         """
         
         # Get session history
@@ -50,7 +49,7 @@ class PreferenceService:
         context = self._prepare_conversation_context(session.messages)
         
         # Extract and update preferences and search parameters
-        preferences, search_params, ambiguity = await self._process_with_llm(
+        preferences, search_params = await self._process_with_llm(
             context=context,
             user_message=user_message,
             current_preferences=current_preferences,
@@ -71,10 +70,9 @@ class PreferenceService:
             new_preferences=preferences,
             old_search_params=current_search_params,
             new_search_params=search_params,
-            ambiguity=ambiguity
         )
         
-        return preferences, search_params, ambiguity
+        return preferences, search_params
     
     def _prepare_conversation_context(self, messages: List[ChatMessage]) -> str:
         """Prepare conversation context from recent messages"""
@@ -178,55 +176,13 @@ Valid preference categories:
   }}
 }}
 
-3. When you detect ambiguous information that *prevents* a parameter from being directly usable in a search, include an "ambiguity" field:
-{{
-  "ambiguity": {{
-    "parameter": "location|price_range|property_type|area_size|features|style",
-    "value": "the ambiguous term or expression",
-    "reason": "reason for the ambiguity"
-    ]
-  }}
-}}
-
-Example Ambiguity Scenarios:
-
-1. Location Ambiguity: The user's localtion requirements need to be precise to subrub; if not, it is ambiguity
-{{
-  "ambiguity": {{
-    "parameter": "location",
-    "value": "North Shore",
-    "reason": "North Shore is a broad term that could refer to multiple suburbs",
-    "question": "The North Shore can mean different pockets — some buyers love the harbourside vibe of the Lower North Shore; others lean towards the leafy Upper North Shore for schools and larger blocks. Which of those sounds closer to what you’re picturing?Would you like me to walk you through median prices and recent sales in both areas so you can see where your budget stretches furthest?"
-  }}
-}}
-{{
-  "ambiguity": {{
-    "parameter": "location",
-    "value": "Sydney",
-    "reason": "Could mean the City of Sydney LGA (just the CBD and a handful of inner suburbs) or the entire Greater Sydney metropolitan area, which stretches ~70 km north‑to‑south and west to the Blue Mountains.",
-    "question": "when you say Sydney, are you thinking of the city centre itself (the CBD and surrounding inner suburbs), or would suburbs across Greater Sydney be in scope as well? Are there particular surburb you’ve already ruled in or out?"
-  }}
-}}
-
-2. Price Range Ambiguity:
-{{
-  "ambiguity": {{
-    "parameter": "min_price",
-    "value": "affordable",
-    "reason": "affordable is a broad term that could refer to different price ranges in different areas",
-    "question": "Could you specify your budget range? In Sydney, 'affordable' can mean different things in different areas. What's your comfortable price range?"
-  }}
-}}
-
 Important Rules:
 1. ONLY include preferences and parameters that have clear evidence from the conversation
 2. Do NOT generate placeholder or assumed values
 3. For location format, strictly follow: STATE-SUBURB-POSTCODE
-4. If ambiguity is detected, don't update the parameter in search_params
 5. Importance values must be between 0.1 (low) and 1.0 (high)
 6. Property types must be lowercase: house, apartment, unit, townhouse, villa, rural
 7. All numeric values must be appropriate for their context
-7. ALWAYS include ambiguity detection when user input is unclear or needs specification
 
 Generate a valid JSON response with the above structure. Include ONLY fields that have clear supporting evidence from the conversation."""
         
@@ -244,12 +200,12 @@ Generate a valid JSON response with the above structure. Include ONLY fields tha
             # Extract preferences, search parameters, and ambiguity information
             preferences = result.get("preferences", {})
             search_params = result.get("search_params", {})
-            ambiguity = result.get("ambiguity")
             
             # Normalize and validate values
             search_params = self._normalize_search_params(search_params)
             
-            return preferences, search_params, ambiguity
+            return preferences, search_params
+        
             
         except Exception as e:
             print(f"Error processing LLM response: {e}")
@@ -317,9 +273,7 @@ Generate a valid JSON response with the above structure. Include ONLY fields tha
                     normalized[param] = int(value)
                 except (TypeError, ValueError):
                     continue
-            elif param == "location_ambiguity":
-                # Pass through location ambiguity structure
-                normalized[param] = value
+
         
         return normalized
     
@@ -329,8 +283,7 @@ Generate a valid JSON response with the above structure. Include ONLY fields tha
         old_preferences: Dict,
         new_preferences: Dict,
         old_search_params: Dict,
-        new_search_params: Dict,
-        ambiguity: Optional[Dict] = None
+        new_search_params: Dict
     ) -> None:
         """Log preference and search parameter updates to chat history"""
         updates = []
@@ -348,16 +301,11 @@ Generate a valid JSON response with the above structure. Include ONLY fields tha
             if new_value != old_value:
                 updates.append(f"• Updated {param}: {new_value}")
         
-        if updates or ambiguity:
+        if updates :
             log_message = []
             if updates:
                 log_message.append("I've updated your preferences and search parameters:")
                 log_message.extend(updates)
-            
-            if ambiguity:
-                if updates:
-                    log_message.append("\nHowever, I need some clarification:")
-                log_message.append(ambiguity["question"])
             
             await self.chat_storage.save_message(
                 session_id,
@@ -384,16 +332,14 @@ async def process_user_preferences(
     """
     service = PreferenceService()
     try:
-        preferences, search_params, ambiguity = await service.process_user_input(session_id, user_message)
+        preferences, search_params = await service.process_user_input(session_id, user_message)
         return {
             "preferences": preferences,
             "search_params": search_params,
-            "ambiguity": ambiguity
         }
     except Exception as e:
         print(f"Error processing user preferences: {e}")
         return {
             "preferences": {},
             "search_params": {},
-            "ambiguity": None
         }
