@@ -77,11 +77,11 @@ class ChatStorageService:
             message: 要保存的消息
             
         Note:
-            只保存 user 和 assistant 的消息，system 消息会被过滤掉
+            只保存 user , assistant, tool 的消息, system 消息会被过滤掉
         """
         try:
             # 验证消息角色
-            if message.role not in ["user", "assistant"]:
+            if message.role not in ["user", "assistant", "tool"]:
                 print(f"Skipping message with role: {message.role}")
                 return
                 
@@ -117,26 +117,18 @@ class ChatStorageService:
     async def update_recommendation_state(
         self,
         session_id: str,
-        recommendation_history: Optional[List[str]] = None,
-        latest_recommendation: Optional[Dict] = None,
         available_properties: Optional[List[Dict]] = None
     ):
-        """更新会话中的推荐相关状态
+        """更新会话中的可用房产列表
         
         Args:
             session_id: 会话ID
-            recommendation_history: 可选，已推荐过的房产ID列表
-            latest_recommendation: 可选，最新的推荐结果
             available_properties: 可选，当前可用的房产列表
         """
         try:
             session_ref = self.sessions_collection.document(session_id)
             update_data = {"last_active": datetime.now()}
             
-            if recommendation_history is not None:
-                update_data["recommendation_history"] = recommendation_history
-            if latest_recommendation is not None:
-                update_data["latest_recommendation"] = latest_recommendation
             if available_properties is not None:
                 update_data["available_properties"] = [prop.model_dump() for prop in available_properties]
                 
@@ -153,3 +145,50 @@ class ChatStorageService:
         except Exception as e:
             print(f"Error in clear_session: {str(e)}")
             raise 
+
+    async def get_recommendation_history(self, session_id: str) -> List[str]:
+        """从会话历史中获取所有推荐过的房产 listing_id
+        
+        Args:
+            session_id: 会话ID
+            
+        Returns:
+            List[str]: 所有推荐过的房产 listing_id 列表
+        """
+        try:
+            session = await self.get_session(session_id)
+            if not session or not session.messages:
+                return []
+            
+            recommendation_history = []
+            for msg in session.messages:
+                # 只处理 tool 类型且是 property_recommendation 的消息
+                if msg.role == "tool" and msg.type == "property_recommendation":
+                    rec = msg.recommendation
+                    # 1. PropertyRecommendationResponse 对象
+                    if rec and hasattr(rec, "properties"):
+                        for prop in rec.properties:
+                            # PropertyWithRecommendation 对象
+                            if hasattr(prop, "property") and hasattr(prop.property, "listing_id"):
+                                listing_id = getattr(prop.property, "listing_id", None)
+                                if listing_id:
+                                    recommendation_history.append(listing_id)
+                            # dict 兼容
+                            elif isinstance(prop, dict):
+                                property_dict = prop.get("property")
+                                if property_dict:
+                                    listing_id = property_dict.get("listing_id")
+                                    if listing_id:
+                                        recommendation_history.append(listing_id)
+                    # 2. dict 兼容
+                    elif rec and isinstance(rec, dict) and "properties" in rec:
+                        for prop in rec["properties"]:
+                            property_dict = prop.get("property")
+                            if property_dict:
+                                listing_id = property_dict.get("listing_id")
+                                if listing_id:
+                                    recommendation_history.append(listing_id)
+            return list(set(recommendation_history))  # 去重返回
+        except Exception as e:
+            print(f"Error in get_recommendation_history: {str(e)}")
+            return []

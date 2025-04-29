@@ -50,8 +50,6 @@ class ChatInput(BaseModel):
     user_input: str = Field(..., min_length=1)  # 确保用户输入不为空
     preferences: Optional[Dict] = {}  # 设置默认空字典
     search_params: Optional[Dict] = {}  # 设置默认空字典
-    recommendation_history: Optional[List[str]] = None
-    latest_recommendation: Optional[PropertyRecommendationResponse] = None
     available_properties: Optional[List[FirestoreProperty]] = None
 
 class ChatResponse(BaseModel):
@@ -60,9 +58,8 @@ class ChatResponse(BaseModel):
     response: str
     preferences: Optional[Dict] = None
     search_params: Optional[Dict] = None
-    recommendation_history: Optional[List[str]] = None
-    latest_recommendation: Optional[PropertyRecommendationResponse] = None
     available_properties: Optional[List[FirestoreProperty]] = None
+    latest_recommendation: Optional[PropertyRecommendationResponse] = None
 
 class PropertyRecommendationRequest(BaseModel):
     """Request model for property recommendations based on state"""
@@ -103,9 +100,8 @@ async def agent_chat_endpoint(chat_input: ChatInput):
             "session_id": session_id,
             "preferences": chat_input.preferences or {},
             "search_params": chat_input.search_params or {},
-            "recommendation_history": chat_input.recommendation_history or [],
-            "latest_recommendation": None,
-            "available_properties": chat_input.available_properties or []
+            "available_properties": chat_input.available_properties or [],
+            "latest_recommendation": None
         }
 
         # Run the agent
@@ -122,16 +118,14 @@ async def agent_chat_endpoint(chat_input: ChatInput):
         
         # Extract the last message and any updated state
         last_message = final_state["messages"][-1].content if final_state["messages"] else ""
-        
         # Construct response
         response = ChatResponse(
             session_id=session_id,
             response=last_message,
             preferences=final_state["preferences"],
             search_params=final_state["search_params"],
-            recommendation_history=final_state["recommendation_history"],
-            latest_recommendation=final_state["latest_recommendation"],
-            available_properties=final_state["available_properties"]
+            available_properties=final_state["available_properties"],
+            latest_recommendation=final_state["latest_recommendation"]
         )
         
         logger.info(f"Returning agent response: {response}")

@@ -68,9 +68,8 @@ class AgentMessagesState(MessagesState):
     session_id: str
     preferences: Dict[str, Any]
     search_params: Dict[str, Any]
-    recommendation_history: List[str] = Field(default_factory=list, description="List of listing_ids that have been recommended")
-    latest_recommendation: Optional[PropertyRecommendationResponse] = Field(default=None, description="Most recent property recommendations")
     available_properties: List[FirestoreProperty] = Field(default_factory=list, description="List of properties from the latest search")
+    latest_recommendation: Optional[PropertyRecommendationResponse] = Field(default=None, description="Last recommendation")
 
 # Tool parameter models
 class ExtractPreferencesInput(BaseModel):
@@ -331,16 +330,15 @@ async def get_conversation_context(session_id: str) -> str:
         return ""
     
     context = "\nPrevious conversation context:\n"
-    # Get last 5 messages
+    # Get last 10 messages but only include user and assistant messages
     recent_messages = session.messages[-10:]
     for msg in recent_messages:
-        context += f"- {msg.role}: {msg.content}\n"
+        if msg.role in ["assistant", "user"]:
+            context += f"- {msg.role}: {msg.content}\n"
     return context
 
 async def llm_call(state: dict) -> AgentMessagesState:
-    """LLM with conversation awareness"""
     session_id = state["session_id"]
-    
     # Ensure session exists
     session = await chat_storage.get_session(session_id)
     if not session:
@@ -417,30 +415,31 @@ conversation context:
 """
             )
         ]
-        + state["messages"]
+        + state["messages"] # single run message, tools call from latest user message
     )
     
     return AgentMessagesState(
         messages=state["messages"] + [response],
         session_id=session_id,
         preferences=state["preferences"],
-        search_params=state["search_params"]
+        search_params=state["search_params"],
+        latest_recommendation=state["latest_recommendation"]
     )
 
 async def tool_node(state: Dict[str, Any]) -> AgentMessagesState:
-    """Enhanced tool execution with history awareness"""
     session_id = state["session_id"]
-    
+    # 初始化所有 return 需要的变量，避免 UnboundLocalError
+    preferences = state.get("preferences", {})
+    search_params = state.get("search_params", {})
+    latest_recommendation = state.get("latest_recommendation", None)
+    available_properties: List[FirestoreProperty] = state.get("available_properties", [])
+
     # Ensure session exists
     session = await chat_storage.get_session(session_id)
     if not session:
         session = await chat_storage.create_session(session_id)
-    
     result: List[ToolMessage] = []
-    recommendation_history: List[str] = state.get("recommendation_history", [])
-    latest_recommendation: Optional[PropertyRecommendationResponse] = state.get("latest_recommendation")
-    available_properties: List[FirestoreProperty] = state.get("available_properties", [])
-    
+
     for tool_call in state["messages"][-1].tool_calls:
         tool = tools_by_name[tool_call["name"]]
         args = tool_call["args"]
@@ -456,36 +455,16 @@ async def tool_node(state: Dict[str, Any]) -> AgentMessagesState:
         # Execute tool
         observation = await tool.ainvoke(args)
         
-        # Log tool result (truncated for readability)
-        result_str = str(observation)
-        truncated_result = result_str[:500] + "..." if len(result_str) > 500 else result_str
-        print(f"Result: {truncated_result}\n")
-        
         # Special handling for preference processing with ambiguity
         if tool.name == "process_preferences" and isinstance(observation, dict):
             # Update state with new preferences and search parameters
-            state["preferences"] = observation.get("preferences", state["preferences"])
-            state["search_params"] = observation.get("search_params", state["search_params"])
-    
-            if observation.get("ambiguity"):
-                # If ambiguity is detected, don't update state yet
-                result.append(ToolMessage(
-                    content=str(observation),
-                    tool_call_id=tool_call["id"]
-                ))
-                # Return early to wait for user clarification
-                return AgentMessagesState(
-                    messages=state["messages"] + result,
-                    session_id=session_id,
-                    preferences=state["preferences"],
-                    search_params=state["search_params"],
-                    recommendation_history=recommendation_history,
-                    latest_recommendation=latest_recommendation,
-                    available_properties=available_properties
-                )
+            preferences = observation.get("preferences", preferences)
+            search_params = observation.get("search_params", search_params)
 
         # Special handling for property recommendations
         elif tool.name == "recommend_from_available_properties":
+            # Get previously recommended properties from chat storage
+            recommendation_history = await chat_storage.get_recommendation_history(session_id)
             # Filter out previously recommended properties
             new_properties = [
                 prop for prop in available_properties 
@@ -493,44 +472,47 @@ async def tool_node(state: Dict[str, Any]) -> AgentMessagesState:
             ]
             
             if not new_properties:
-                observation = PropertyRecommendationResponse(properties=[])
+                observation = "No new properties to recommend. need to search properties again."
             else:
                 # Get recommendations using the recommender service
                 observation = await recommender.get_recommendations(
                     properties=new_properties,
-                    preferences=state["preferences"]
+                    preferences=preferences
                 )
-            
-            # Update latest recommendation and history
-            latest_recommendation = observation
-            if isinstance(observation, dict):
-                new_recommendations = [
-                    prop.listing_id for prop in observation.get("properties", [])
-                ]
-                recommendation_history.extend(new_recommendations)
-        
+                latest_recommendation = observation
+                print(f"Last recommendation: {latest_recommendation}")
+            # Save as ChatMessage
+            chat_msg = ChatMessage(
+                role="tool",
+                content="Property recommendations generated.",  # 简要摘要
+                type="property_recommendation",
+                recommendation=latest_recommendation if isinstance(latest_recommendation, PropertyRecommendationResponse) else None,
+                metadata={"tool_call_id": tool_call["id"], "tool_name": tool.name},
+                timestamp=datetime.now()
+            )
+            await chat_storage.save_message(session_id, chat_msg)
+
         elif tool.name == "search_properties":
-            # Store the search results in state
-            available_properties = available_properties + observation
-        
-        result.append(ToolMessage(content=str(observation), tool_call_id=tool_call["id"]))
-    
-    # Update recommendation state in chat storage
-    await chat_storage.update_recommendation_state(
-        session_id=session_id,
-        recommendation_history=recommendation_history,
-        latest_recommendation=latest_recommendation.model_dump() if latest_recommendation else None,
-        available_properties=available_properties
-    )
-    
+            available_properties = observation
+            # Update available_properties state in chat storage
+            await chat_storage.update_recommendation_state(
+                session_id=session_id,
+                available_properties=available_properties
+            )
+
+        result.append(ToolMessage(
+            content=str(observation),
+            tool_call_id=tool_call["id"],
+            metadata={"type": "property_recommendation"}
+        ))
+
     return AgentMessagesState(
         messages=state["messages"] + result,
         session_id=session_id,
-        preferences=state["preferences"],
-        search_params=state["search_params"],
-        recommendation_history=recommendation_history,
-        latest_recommendation=latest_recommendation,
-        available_properties=available_properties
+        preferences=preferences,
+        search_params=search_params,
+        available_properties=available_properties,
+        latest_recommendation=latest_recommendation
     )
 
 # Conditional edge function
