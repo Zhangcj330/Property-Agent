@@ -62,6 +62,11 @@ llm = ChatGoogleGenerativeAI(
     model="gemini-2.0-flash",
 )
 
+response_llm = ChatGoogleGenerativeAI(
+    api_key=settings.GEMINI_API_KEY,
+    base_url=settings.BASE_URL,
+    model="gemini-2.0-flash",
+)
 # Define custom state class
 class AgentMessagesState(MessagesState):
     """State class for the agent that extends MessagesState with additional fields"""
@@ -288,7 +293,8 @@ async def search_suburb(
     question: str,
     filters: Optional[Dict[str, Any]] = None
 ) -> dict:
-    """Help user to find the suburb based on their preferences
+    """Use this tool when the user expresses general investment or home-buying preferences without specifying a particular suburb. 
+    This tool helps explore potential suburbs based on their stated needs and desires (e.g., family-friendly, high growth potential, good rental yield) at a broader city or regional level, rather than focusing on specific streets or neighborhoods.
     
     Args:
         question: str - The natural language question to query the database
@@ -371,7 +377,12 @@ Important Tool Usage Guidelines:
    unemployment, demographics, affluence, and days on market, distance to city center. 
    Let the user answer freely. Extract as many preferences as possible from the user's natural language response.
 
-3. Use `web_search` when you need additional information from web search, like school, hospital, train station, shopping center, etc.
+3. Use `web_search` when you need additional information from web
+    - Economic strength
+    - Infrastructure pipeline
+    - Industry mix (health, education, etc.)
+    - Market tightness (inventory/vacancy context)
+    - Relevant insights about market trends, demographic patterns, and future growth potential
 
 4. Use `search_properties` after preferences and search parameters are clear, especially location make sure format is correct.
     - never ask user to provide postcode, search web for postcode if you need it.
@@ -380,11 +391,13 @@ Important Tool Usage Guidelines:
 
 5. After `search_properties`, *Must* use `recommend_from_available_properties` for personalized recommendations
 
+Find out as soon as possible whether the user has a preferred area. 
+If there are any, recommend the houses in this area. 
+If the user is not clear about the area, ask about the preferences related to the area as soon as possible and use the search_suburb and web_search tools for recommendations
 
 When NOT using tools, follow these guidelines for natural language responses:
 1. Provide comprehensive analysis that goes beyond surface-level observations
 2. Consider multiple perspectives and potential implications
-3. Share relevant insights about market trends, demographic patterns, and future growth potential
 4. Use clear, engaging language that builds rapport with the user
 5. Structure responses to flow naturally from broad context to specific details
 6. Include both quantitative data and qualitative insights when available
@@ -392,10 +405,11 @@ When NOT using tools, follow these guidelines for natural language responses:
 8. Offer thoughtful suggestions while respecting the collaborative nature of the conversation
 9. Connect individual property features to broader lifestyle and investment considerations
 10. Maintain a professional yet approachable tone that builds trust
-11. proactively ask users to clarify their preferences and search parameters
-12. proactively ask user if they need help on provide suburb information. if so, use `search_suburb` to get the information. 
+11. Proactively guide users to clarify their needs.
+12. Proactively ask user if they need help on provide suburb information. if so, utilize `search_suburb` and `web_search` to recommend suburb.
 13. When making a recommendation, always provide: Specific data or evidence and sources or references for the evidence provided.
 14. If ambiguity is detected, STOP and engage with the user to clarify
+15. only ask one question at a time, Provide context or examples if helpful.
 
 DO NOT reply in plain text about what you "plan" or "will" do. 
 Do not mention the tool you are using in your response.
@@ -516,20 +530,85 @@ async def tool_node(state: Dict[str, Any]) -> AgentMessagesState:
     )
 
 # Conditional edge function
-def should_continue(state: dict) -> Literal["environment", END]:
+def should_continue(state: dict) -> Literal["environment", "response"]:
     """Decide if we should continue the loop or stop"""
     messages = state["messages"]
     last_message = messages[-1]
     if last_message.tool_calls:
         return "Action"
-    return END
+    return "response"
+
+async def response_node(state: dict) -> AgentMessagesState:
+    """Generate natural language response based on the current state.
+    This node is responsible for:
+    1. Formatting the final response to the user
+    2. Saving the response to chat storage
+    3. Applying any response-specific processing or formatting
+    """
+    session_id = state["session_id"]
+
+    context = await get_conversation_context(session_id)
+    response = response_llm.invoke([
+        SystemMessage(content=f"""
+As a property agent assistant, follow these guidelines for natural language responses:
+1. Make responses natural and engaging while maintaining a professional tone
+2. Ask one question at a time
+3. Offer thoughtful suggestions while respecting the collaborative nature of the conversation
+                  
+Find out as soon as possible whether the user has a preferred area. 
+If there are any, recommend the houses in this area. 
+If the user is not clear about the area, ask about the preferences related to the area as soon as possible and use the search_suburb and web_search tools for recommendations
+
+You should ask the user a structured series of questions to fully understand their intent and preferences.
+
+Branch based on the answer:
+If the user says **investment**:
+Ask these questions step by step:
+1. What is your primary investment goal? (e.g., capital growth, rental yield, or both)
+2. What is your maximum budget?
+3. Do you have a minimum expected rental yield? (e.g., 4.5% or higher)
+4. Are there specific regions or towns you're interested in? (e.g., any particular state, LGA, suburb)
+    if user does not a specific suburb, then continue asking question to get the information for search_suburb. if user provide a suburb, then use `search_suburb` to get the information.
+5. What is the maximum distance from the town center you're comfortable with? (e.g., 15 km)
+6. Which local economic features are important to you? (e.g., infrastructure development, population growth, job diversity in sectors like health or education)
+7. Are there any areas or types of locations you'd like to avoid? (e.g., tourist towns, affluent suburbs, remote regions)
+after asking all the questions, use `search_properties` to get the properties.
+
+If the user says **home buyer**:
+As an outstanding real estate agent helping buyers select their own homes, you should guide users to focus on the following core directions
+Make sure to understand both the basic conditions of the buyers and uncover their potential true needs
+1. Motivation and Timeline
+2. Budget and Financial Framework
+3. Location Preferences
+    if user does not a specific suburb, then continue asking question to get the information for search_suburb. if user provide a suburb, then use `search_suburb` to get the information.
+4. Schools and Family Planning
+5. Property Type and Functional Needs
+6. Lifestyle and Environmental Preferences
+7. Property Condition and Style
+8. Must-Haves and Deal Breakers
+                      
+conversation context:
+{context}
+"""),
+        HumanMessage(content=f"Please revise this message imitate the property buyer's agent: {state['messages'][-1].content}")
+    ])
+    
+    return AgentMessagesState(
+        messages=state["messages"] + [response],
+        session_id=session_id,
+        preferences=state.get("preferences", {}),
+        search_params=state.get("search_params", {}),
+        available_properties=state.get("available_properties", []),
+        latest_recommendation=state.get("latest_recommendation", None)
+    )
 
 # Build workflow
-agent_builder = StateGraph(AgentMessagesState)  # Keep using MessagesState as base
+agent_builder = StateGraph(AgentMessagesState)
 
 # Add nodes
 agent_builder.add_node("llm_call", llm_call)
 agent_builder.add_node("environment", tool_node)
+agent_builder.add_node("response", response_node)
 
 # Add edges
 agent_builder.add_edge(START, "llm_call")
@@ -538,10 +617,11 @@ agent_builder.add_conditional_edges(
     should_continue,
     {
         "Action": "environment",
-        END: END,
+        "response": "response",
     },
 )
 agent_builder.add_edge("environment", "llm_call")
+agent_builder.add_edge("response", END)
 
 # Compile the agent
 agent = agent_builder.compile()
