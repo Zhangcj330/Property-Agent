@@ -1,31 +1,34 @@
+# Web框架和服务
 fastapi
 uvicorn
-openai
+mangum  # AWS Lambda部署支持
+
+# AI和LLM相关
 langchain
 langgraph
-pydantic
-python-dotenv
-sqlalchemy
-aiohttp
-Pillow
-torch
-transformers
-pytest
-pytest-asyncio
-beautifulsoup4
-requests
-fake-useragent
-pandas 
-google-generativeai
-firebase-admin
-mcp
-langchain-mcp-adapters
-typing_extensions
 langchain-google-genai
-duckduckgo-search
-playwright
-nest-asyncio
-lxml
+langchain_community
+google-generativeai
+openai
+
+# 数据处理和存储
+pydantic
+sqlalchemy
 duckdb
-IPython
+pandas
+firebase-admin
+
+# 网络和API
+aiohttp
+requests
 backoff
+duckduckgo-search==3.9.5
+
+# 网页处理
+beautifulsoup4
+fake-useragent
+
+# 辅助工具
+python-dotenv
+typing_extensions
+IPython  # 笔记本支持

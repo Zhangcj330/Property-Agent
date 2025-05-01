@@ -9,7 +9,7 @@ sys.path.append(str(backend_dir))
 import pytest
 from datetime import datetime
 from langchain_core.messages import HumanMessage
-from .agent import agent, extract_preferences, get_session_state, chat_storage
+from ..Agent.agent import agent, extract_preferences, get_session_state, chat_storage
 
 @pytest.mark.asyncio
 async def test_session_id_propagation():

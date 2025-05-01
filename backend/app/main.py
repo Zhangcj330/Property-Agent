@@ -1,28 +1,83 @@
-from fastapi import FastAPI, Depends, HTTPException
+from fastapi import FastAPI, Depends, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy.orm import Session
-from .services.property_api import PropertyAPI
-from .services.image_processor import ImageProcessor, ImageAnalysisRequest,PropertyAnalysis
+from .services.image_processor import ImageProcessor
 from .services.recommender import PropertyRecommender
-from .models import UserPreferences, PropertySearchRequest, PropertySearchResponse, FirestoreProperty, PropertyRecommendationResponse, PropertyWithRecommendation, PropertyRecommendationInfo
+from .models import FirestoreProperty, PropertyRecommendationResponse, PropertyWithRecommendation
 from .llm_service import LLMService
 from pydantic import BaseModel, Field
 from typing import List, Dict, Optional
 from .services.property_scraper import PropertyScraper
 from .services.firestore_service import FirestoreService
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage, ChatMessage
-from .Agent.agent import get_session_state, agent
+from .Agent.agent import agent
 from .services.chat_storage import ChatStorageService
 from datetime import datetime
+from mangum import Mangum  
 
 import uuid
 import logging
+import os
+import json
 
 # 配置日志
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = FastAPI()
+
+# 添加健康检查端点 - 多种路径格式，确保至少一个能匹配
+@app.get("/")
+@app.get("/health")
+@app.get("/healthcheck")
+@app.get("/api/health")
+@app.get("/api/v1/health")
+async def health_check(request: Request):
+    """健康检查端点，支持多种路径格式"""
+    logger.info(f"健康检查请求 - 路径: {request.url.path}, 查询参数: {request.query_params}")
+    return {
+        "status": "ok", 
+        "message": "Property Agent API is running",
+        "path": request.url.path,
+        "request_info": {
+            "method": request.method,
+            "url": str(request.url),
+            "client": request.client.host if request.client else None,
+        }
+    }
+
+# 添加一个调试端点，显示请求信息
+@app.get("/debug")
+@app.post("/debug")
+async def debug_endpoint(request: Request):
+    """调试端点，返回请求的详细信息"""
+    # 尝试读取请求体
+    body = None
+    try:
+        body = await request.json()
+    except:
+        try:
+            body = await request.body()
+            body = body.decode("utf-8")
+        except:
+            body = "无法读取请求体"
+            
+    # 收集请求信息
+    request_info = {
+        "method": request.method,
+        "url": str(request.url),
+        "path": request.url.path,
+        "path_params": dict(request.path_params),
+        "query_params": dict(request.query_params),
+        "headers": dict(request.headers),
+        "client": {
+            "host": request.client.host if request.client else None,
+            "port": request.client.port if request.client else None,
+        },
+        "body": body
+    }
+    
+    logger.info(f"调试端点请求: {json.dumps(request_info)}")
+    return request_info
 
 # Configure CORS
 app.add_middleware(
@@ -69,6 +124,12 @@ class PropertyRecommendationRequest(BaseModel):
 # API Routers
 # v1 API endpoints
 v1_prefix = "/api/v1"
+
+# 添加直接的聊天路径
+@app.post("/agent/chat")
+async def direct_agent_chat(chat_input: ChatInput):
+    """没有前缀的聊天端点，直接调用主函数"""
+    return await agent_chat_endpoint(chat_input)
 
 @app.post(f"{v1_prefix}/agent/chat", tags=["Agent"], response_model=ChatResponse)
 async def agent_chat_endpoint(chat_input: ChatInput):
@@ -202,3 +263,11 @@ async def get_conversation_history(session_id: str):
     except Exception as e:
         logger.error(f"Error in get_conversation_history: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"An error occurred while fetching conversation: {str(e)}")
+
+# 创建Lambda处理器
+handler = Mangum(app)
+
+# 用于本地开发的入口点
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("app.main:app", host="0.0.0.0", port=8000, reload=True)
