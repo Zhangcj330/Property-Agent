@@ -4,6 +4,7 @@ from app.models import PropertySearchResponse, FirestoreProperty, InvestmentInfo
 from app.services.image_processor import PropertyAnalysis
 from app.config import settings
 from datetime import datetime
+import uuid
 
 class FirestoreService:
     def __init__(self):
@@ -11,6 +12,7 @@ class FirestoreService:
         self.db = firestore.Client.from_service_account_info(settings.FIREBASE_CONFIG)
         self.properties_collection = self.db.collection('properties')
         self.saved_properties_collection = self.db.collection('saved_properties')
+        self.feedback_collection = self.db.collection('feedback')
 
     async def save_property(self, property_data: Union[PropertySearchResponse, FirestoreProperty]) -> str:
         """Save or update a property listing
@@ -220,4 +222,41 @@ class FirestoreService:
             
         except Exception as e:
             print(f"Error removing saved property: {str(e)}")
+            raise
+
+    async def save_feedback(self, 
+                           feedback_text: str,
+                           feedback_type: str = 'general',
+                           session_id: Optional[str] = None,
+                           screenshot_url: Optional[str] = None) -> str:
+        """Save user feedback to Firestore
+        
+        Args:
+            feedback_text: The feedback text content
+            feedback_type: The type of feedback (default: 'general')
+            session_id: Optional session ID the feedback is associated with
+            screenshot_url: Optional URL to a screenshot
+            
+        Returns:
+            str: The created feedback ID
+        """
+        try:
+            feedback_id = str(uuid.uuid4())
+            doc_ref = self.feedback_collection.document(feedback_id)
+            
+            feedback_data = {
+                'id': feedback_id,
+                'text': feedback_text,
+                'type': feedback_type,
+                'session_id': session_id,
+                'has_screenshot': bool(screenshot_url),
+                'screenshot_url': screenshot_url,
+                'created_at': datetime.now(),
+            }
+            
+            doc_ref.set(feedback_data)
+            return feedback_id
+            
+        except Exception as e:
+            print(f"Error saving feedback: {str(e)}")
             raise 

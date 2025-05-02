@@ -13,7 +13,7 @@ from .Agent.agent import agent
 from .services.chat_storage import ChatStorageService
 from datetime import datetime
 from mangum import Mangum  
-
+import boto3
 import uuid
 import logging
 import os
@@ -120,6 +120,20 @@ class PropertyRecommendationRequest(BaseModel):
     """Request model for property recommendations based on state"""
     preferences: Dict
     search_params: Dict
+
+# 添加新的数据模型
+class FeedbackInput(BaseModel):
+    """Request model for submitting feedback"""
+    feedback_text: str = Field(..., min_length=1)
+    feedback_type: Optional[str] = "general"
+    session_id: Optional[str] = None
+    image_key: Optional[str] = None
+
+class PresignedUrlResponse(BaseModel):
+    """Response model for presigned URL generation"""
+    url: str
+    fields: Dict
+    image_key: str
 
 # API Routers
 # v1 API endpoints
@@ -263,6 +277,106 @@ async def get_conversation_history(session_id: str):
     except Exception as e:
         logger.error(f"Error in get_conversation_history: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"An error occurred while fetching conversation: {str(e)}")
+
+# 添加新的endpoint，生成用于上传截图的预签名URL
+@app.get(f"{v1_prefix}/feedback/upload-url", tags=["Feedback"])
+async def get_presigned_url(image_type: str = "jpeg"):
+    """Generate a presigned URL for uploading feedback screenshots to S3
+    
+    Args:
+        image_type: Image format type (jpeg, png, gif, webp). Defaults to jpeg.
+    """
+    try:
+        # 验证图片类型
+        image_type = image_type.lower()
+        allowed_types = {
+            "jpeg": "image/jpeg",
+            "jpg": "image/jpeg",
+            "png": "image/png",
+            "gif": "image/gif",
+            "webp": "image/webp"
+        }
+        
+        if image_type not in allowed_types:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unsupported image type. Allowed types: {', '.join(allowed_types.keys())}"
+            )
+            
+        content_type = allowed_types[image_type]
+        file_extension = "jpg" if image_type in ["jpeg", "jpg"] else image_type
+        
+        # 配置S3客户端
+        s3_client = boto3.client(
+            's3',
+            aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
+            aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'),
+            region_name=os.environ.get('AWS_REGION', 'ap-northeast-1')
+        )
+        
+        # 生成唯一的图片键
+        image_key = f"feedback-screenshots/{uuid.uuid4()}.{file_extension}"
+        bucket_name = os.environ.get('S3_BUCKET_NAME', 'property-agent-uploads')
+        
+        # 生成预签名URL，有效期10分钟
+        presigned_post = s3_client.generate_presigned_post(
+            Bucket=bucket_name,
+            Key=image_key,
+            Fields={"content-type": content_type},
+            Conditions=[
+                {"content-type": content_type},
+                ["content-length-range", 1, 10485760],  # 限制文件大小为10MB
+            ],
+            ExpiresIn=600
+        )
+        
+        # 返回预签名URL和相关信息
+        return PresignedUrlResponse(
+            url=presigned_post['url'],
+            fields=presigned_post['fields'],
+            image_key=image_key
+        )
+        
+    except Exception as e:
+        logger.error(f"Error generating presigned URL: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error generating upload URL: {str(e)}"
+        )
+
+# 添加保存反馈的endpoint
+@app.post(f"{v1_prefix}/feedback", tags=["Feedback"], status_code=201)
+async def save_feedback(feedback: FeedbackInput):
+    """Save user feedback with optional screenshot URL"""
+    try:
+        # 初始化Firestore服务
+        firestore_service = FirestoreService()
+        # 如果有图片键，构建完整的S3公共URL
+        screenshot_url = None
+        if feedback.image_key:
+            bucket_name = os.environ.get('S3_BUCKET_NAME', 'property-agent-uploads')
+            region = os.environ.get('AWS_REGION', 'ap-northeast-1')
+            screenshot_url = f"https://{bucket_name}.s3.{region}.amazonaws.com/{feedback.image_key}"
+        # 保存反馈到Firestore
+        feedback_id = await firestore_service.save_feedback(
+            feedback_text=feedback.feedback_text,
+            feedback_type=feedback.feedback_type,
+            session_id=feedback.session_id,
+            screenshot_url=screenshot_url
+        )
+        
+        return {
+            "status": "success",
+            "feedback_id": feedback_id,
+            "message": "Feedback saved successfully"
+        }
+        
+    except Exception as e:
+        logger.error(f"Error saving feedback: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error saving feedback: {str(e)}"
+        )
 
 # 创建Lambda处理器
 handler = Mangum(app)

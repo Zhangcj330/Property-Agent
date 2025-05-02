@@ -17,6 +17,7 @@ sqlalchemy
 duckdb
 pandas
 firebase-admin
+boto3
 
 # 网络和API
 aiohttp
