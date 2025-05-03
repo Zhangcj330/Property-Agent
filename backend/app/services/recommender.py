@@ -1,6 +1,6 @@
 from typing import List, Dict, Optional
 from pydantic import BaseModel, Field
-from langchain_community.chat_models import ChatOpenAI
+from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.output_parsers import JsonOutputParser
 from langchain_core.messages import HumanMessage
 from app.models import UserPreferences, FirestoreProperty, PropertyRecommendationResponse, PropertyWithRecommendation, PropertyRecommendationInfo
@@ -16,7 +16,7 @@ class PropertyRecommendation(BaseModel):
 
 class PropertyRecommender:
     def __init__(self):
-        self.client = ChatOpenAI(
+        self.client = ChatGoogleGenerativeAI(
             api_key=settings.GEMINI_API_KEY,
             base_url=settings.BASE_URL,
             model="gemini-2.0-flash",

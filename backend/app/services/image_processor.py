@@ -4,7 +4,7 @@ from typing import Dict, List, Optional, Literal
 from pydantic import BaseModel, Field, HttpUrl
 import json
 from fastapi import HTTPException
-from langchain_community.chat_models import ChatOpenAI
+from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.output_parsers import JsonOutputParser
 from langchain_core.messages import HumanMessage
 from app.config import settings
@@ -64,7 +64,7 @@ class ImageAnalysisRequest(BaseModel):
 class ImageProcessor:
     def __init__(self):
         # Configure LLM client
-        self.client = ChatOpenAI(
+        self.client = ChatGoogleGenerativeAI(
             api_key=settings.GEMINI_API_KEY,
             base_url=settings.BASE_URL,
             model="gemini-2.0-flash",
@@ -124,3 +124,4 @@ class ImageProcessor:
             
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
+        
