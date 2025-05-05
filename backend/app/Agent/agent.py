@@ -3,6 +3,7 @@ import sys
 from pathlib import Path
 import asyncio
 import json
+import logging
 
 # Add the backend directory to Python path
 backend_dir = Path(__file__).parent.parent.parent
@@ -67,6 +68,9 @@ response_llm = ChatGoogleGenerativeAI(
     base_url=settings.BASE_URL,
     model="gemini-2.0-flash",
 )
+
+logger = logging.getLogger(__name__)
+
 # Define custom state class
 class AgentMessagesState(MessagesState):
     """State class for the agent that extends MessagesState with additional fields"""
@@ -131,7 +135,7 @@ async def process_property(result: PropertySearchResponse) -> FirestoreProperty:
                 if not planning_info.error:
                     firestore_property.planning_info = planning_info
             except Exception as e:
-                print(f"Error getting planning info for {firestore_property.listing_id}: {str(e)}")
+                logger.error(f"Error getting planning info for {firestore_property.listing_id}: {str(e)}")
         tasks.append(get_planning())
     
     # Add investment metrics task if suburb info available
@@ -145,7 +149,7 @@ async def process_property(result: PropertySearchResponse) -> FirestoreProperty:
                 )
                 firestore_property.investment_info = investment_metrics
             except Exception as e:
-                print(f"Error getting investment metrics for {firestore_property.listing_id}: {str(e)}")
+                logger.error(f"Error getting investment metrics for {firestore_property.listing_id}: {str(e)}")
         tasks.append(get_investment())
     
     # Add image analysis task if images available
@@ -175,7 +179,7 @@ async def process_property(result: PropertySearchResponse) -> FirestoreProperty:
                     if analyzed_property:
                         return analyzed_property
             except Exception as e:
-                print(f"Error analyzing images for {firestore_property.listing_id}: {str(e)}")
+                logger.error(f"Error analyzing images for {firestore_property.listing_id}: {str(e)}")
             return None
         tasks.append(analyze_images())
     
@@ -189,7 +193,7 @@ async def process_property(result: PropertySearchResponse) -> FirestoreProperty:
                 return result
                 
     except Exception as e:
-        print(f"Error in concurrent processing for {firestore_property.listing_id}: {str(e)}")
+        logger.error(f"Error in concurrent processing for {firestore_property.listing_id}: {str(e)}")
     
     # If we get here, either there were no tasks or no valid property was returned
     # Save the property if it wasn't saved during image analysis
@@ -245,7 +249,7 @@ async def search_properties(
         )
         return [prop for prop in firestore_properties if prop is not None]
     except Exception as e:
-        print(f"Error in concurrent property processing: {str(e)}")
+        logger.error(f"Error in concurrent property processing: {str(e)}")
         return []
 
 @tool
@@ -282,7 +286,7 @@ async def process_preferences(session_id: str, user_message: str) -> dict:
             "search_params": search_params
         }
     except Exception as e:
-        print(f"Error processing preferences: {e}")
+        logger.error(f"Error processing preferences: {e}")
         return {
             "preferences": {},
             "search_params": {},
@@ -458,9 +462,9 @@ async def tool_node(state: Dict[str, Any]) -> AgentMessagesState:
         tool = tools_by_name[tool_call["name"]]
         args = tool_call["args"]
         
-        # Add tool usage logging
-        print(f"\n🔧 Using tool: {tool.name}")
-        print(f"Arguments: {json.dumps(args, indent=2)}")
+        # Add tool usage logging - Replace print with logger
+        logger.info(f"Using tool: {tool.name}")
+        logger.info(f"Tool arguments: {json.dumps(args, indent=2)}")
         
         # Add session_id and other state info to tool args
         if isinstance(args, dict):
@@ -494,7 +498,8 @@ async def tool_node(state: Dict[str, Any]) -> AgentMessagesState:
                     preferences=preferences
                 )
                 latest_recommendation = observation
-                print(f"Last recommendation: {latest_recommendation}")
+                # Replace print with logger
+                logger.info(f"Last recommendation: {latest_recommendation}")
             # Save as ChatMessage
             chat_msg = ChatMessage(
                 role="tool",

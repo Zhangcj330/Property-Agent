@@ -3,7 +3,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from .services.image_processor import ImageProcessor
 from .services.recommender import PropertyRecommender
 from .models import FirestoreProperty, PropertyRecommendationResponse, PropertyWithRecommendation
-from .llm_service import LLMService
 from pydantic import BaseModel, Field
 from typing import List, Dict, Optional
 from .services.property_scraper import PropertyScraper
@@ -19,8 +18,7 @@ import logging
 import os
 import json
 
-# 配置日志
-logging.basicConfig(level=logging.INFO)
+# No duplicate logging configuration here - use the one from lambda.py
 logger = logging.getLogger(__name__)
 
 app = FastAPI()
@@ -32,8 +30,8 @@ app = FastAPI()
 @app.get("/api/health")
 @app.get("/api/v1/health")
 async def health_check(request: Request):
-    """健康检查端点，支持多种路径格式"""
-    logger.info(f"健康检查请求 - 路径: {request.url.path}, 查询参数: {request.query_params}")
+    """Health check endpoint supporting multiple path formats"""
+    logger.info(f"Health check request - path: {request.url.path}, query params: {request.query_params}")
     return {
         "status": "ok", 
         "message": "Property Agent API is running",
@@ -49,8 +47,8 @@ async def health_check(request: Request):
 @app.get("/debug")
 @app.post("/debug")
 async def debug_endpoint(request: Request):
-    """调试端点，返回请求的详细信息"""
-    # 尝试读取请求体
+    """Debug endpoint that returns detailed request information"""
+    # Try to read request body
     body = None
     try:
         body = await request.json()
@@ -59,9 +57,9 @@ async def debug_endpoint(request: Request):
             body = await request.body()
             body = body.decode("utf-8")
         except:
-            body = "无法读取请求体"
+            body = "Unable to read request body"
             
-    # 收集请求信息
+    # Collect request information
     request_info = {
         "method": request.method,
         "url": str(request.url),
@@ -76,7 +74,7 @@ async def debug_endpoint(request: Request):
         "body": body
     }
     
-    logger.info(f"调试端点请求: {json.dumps(request_info)}")
+    logger.info(f"Debug endpoint request: {json.dumps(request_info)}")
     return request_info
 
 # Configure CORS
@@ -94,8 +92,6 @@ image_processor = ImageProcessor()
 recommender = PropertyRecommender()
 property_scraper = PropertyScraper()
 
-# Initialize LLM service without passing API key
-llm_service = LLMService()
 
 # Initialize Firestore service
 firestore_service = FirestoreService()

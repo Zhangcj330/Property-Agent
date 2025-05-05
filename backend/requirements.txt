@@ -7,7 +7,6 @@ mangum  # AWS Lambda部署支持
 langchain
 langgraph
 langchain-google-genai
-langchain_community
 google-generativeai
 openai
 
@@ -24,6 +23,7 @@ aiohttp
 requests
 backoff
 duckduckgo-search==3.9.5
+httpx==0.28.1
 
 # 网页处理
 beautifulsoup4
@@ -33,3 +33,4 @@ fake-useragent
 python-dotenv
 typing_extensions
 IPython  # 笔记本支持
+python-json-logger  # 结构化日志输出

@@ -11,17 +11,17 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      # Firebase凭证文件
+      # Firebase credentials file
       - ./Firebase_key.json:/app/Firebase_key.json:ro
-      # 持久化数据
+      # Persistent data
       - backend-data:/app/data
     env_file:
-      # 支持多环境配置
+      # Support for multi-environment configuration
       - .env
-      # 可选：如果有特定环境的配置文件
+      # Optional: If there are environment-specific config files
       # - .env.${ENV:-production}
     environment:
-      # 可以在这里定义或覆盖环境变量
+      # Environment variables can be defined or overridden here
       - PYTHONUNBUFFERED=1
       - PYTHONPATH=/app
     healthcheck:
@@ -35,10 +35,10 @@ services:
 
 volumes:
   backend-data:
-    # 内部卷，自动创建
+    # Internal volume, automatically created
     driver: local
 
-# 可选：如果有多个服务（如数据库等）需要网络通信
+# Optional: If there are multiple services (such as databases) that need network communication
 networks:
   app-network:
     driver: bridge 
