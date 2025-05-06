@@ -1,30 +1,39 @@
 import logging
-import json
 from mangum import Mangum
 from app.main import app
-from pythonjsonlogger import jsonlogger  # Add this dependency to requirements.txt
+from pythonjsonlogger import jsonlogger
 
-# Configure logging - central configuration point
-handler = logging.StreamHandler()
-formatter = jsonlogger.JsonFormatter('%(asctime)s %(levelname)s %(name)s %(message)s')
-handler.setFormatter(formatter)
+# ---------- Configure Logging ----------
+log_stream_handler = logging.StreamHandler()
+log_formatter = jsonlogger.JsonFormatter('%(asctime)s %(levelname)s %(name)s %(message)s')
+log_stream_handler.setFormatter(log_formatter)
 
-# Configure root logger
 root_logger = logging.getLogger()
 root_logger.setLevel(logging.INFO)
-# Clear any existing handlers
 for h in root_logger.handlers:
     root_logger.removeHandler(h)
-root_logger.addHandler(handler)
+root_logger.addHandler(log_stream_handler)
 
-# Get module-specific logger
 logger = logging.getLogger(__name__)
 
-# Create Lambda handler with compatible configuration
-handler = Mangum(
-    app, 
-    lifespan="off",
-    api_gateway_base_path="/")
+# ---------- App and Handler ----------
+_app = None
 
-# Add initialization log
-logger.info("Lambda handler initialized") 
+def get_app():
+    global _app
+    if _app is None:
+        _app = app
+        logger.info("FastAPI application initialized on first request")
+    return _app
+
+def get_lambda_handler():
+    return Mangum(
+        get_app(),
+        lifespan="off",
+        api_gateway_base_path="/"
+    )
+
+def handler(event, context):
+    mangum_handler = get_lambda_handler()
+    logger.info("Processing Lambda request")
+    return mangum_handler(event, context)
