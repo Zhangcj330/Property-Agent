@@ -35,15 +35,12 @@ from app.services.property_scraper import PropertyScraper
 from app.services.recommender import PropertyRecommender
 from app.services.chat_storage import ChatStorageService
 from app.services.firestore_service import FirestoreService
-from app.services.preference_service import (
-    PreferenceService,
-)
+from app.services.preference_service import PreferenceService
 from app.services.planning_service import get_planning_info
 from app.services.investment_service import InvestmentService
-from IPython.display import Image, display
-from langchain_community.tools import DuckDuckGoSearchResults
+from app.services.duckduckgo_search import DuckDuckGoSearchResults
 from app.services.sql_service import SQLService
-
+from IPython.display import Image, display
 from dotenv import load_dotenv
 load_dotenv(dotenv_path='.env')
 
