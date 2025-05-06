@@ -1,30 +1,30 @@
-# Build stage - Removed multi-stage build approach
-FROM public.ecr.aws/lambda/python:3.11
+# 基础镜像
+FROM python:3.11-slim
 
-# Set working directory
-WORKDIR ${LAMBDA_TASK_ROOT}
+# 安装构建依赖
+RUN apt-get update && apt-get install -y \
+    gcc \
+    rustc \
+    cargo \
+    curl \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Install only necessary system dependencies
-RUN yum install -y tar gzip && yum clean all
+# 强制升级 pip（避免卸载报错）
+RUN python3 -m ensurepip --upgrade && \
+    python3 -m pip install --upgrade --ignore-installed pip
 
-# Copy requirements.txt and install dependencies
-COPY requirements.txt .
+# 设置工作目录
+WORKDIR /var/task
 
-# Install pre-compiled lxml instead of building from source
-RUN pip install --no-cache-dir --platform manylinux2014_aarch64 --target=${LAMBDA_TASK_ROOT} --implementation cp --python-version 3.11 --only-binary=:all: --upgrade lxml
-
-# Install other dependencies
-RUN pip install --no-cache-dir --target=${LAMBDA_TASK_ROOT} -r requirements.txt
-
-# Create necessary directory structure
-RUN mkdir -p /app/secrets /app/data /app/app/data
-
-# Copy application code
+# 复制代码和 requirements
 COPY . .
 
-# Set environment variables
-ENV PYTHONPATH=${LAMBDA_TASK_ROOT}
-ENV PYTHONUNBUFFERED=1
+# 安装依赖
+RUN pip install primp==0.15.0 duckduckgo-search==8.0.1 && \
+    pip install -r requirements.txt
 
-# Set Lambda handler
-CMD ["lambda.handler"] 
+# 设置环境变量（告诉 Lambda 用哪个模块和函数作为 handler）
+ENV _HANDLER=lambda.handler
+
+# 启动 runtime interface client
+CMD ["python3", "-m", "awslambdaric", "lambda.handler"]

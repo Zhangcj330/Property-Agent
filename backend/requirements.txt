@@ -21,8 +21,7 @@ boto3
 # 网络和API
 aiohttp
 requests
-duckduckgo-search==6.4.2
-httpx==0.28.1
+httpx
 
 # 网页处理
 beautifulsoup4
@@ -33,3 +32,4 @@ python-dotenv
 typing_extensions
 IPython  # 笔记本支持
 python-json-logger  # 结构化日志输出
+backoff
