@@ -20,8 +20,8 @@ WORKDIR /var/task
 COPY . .
 
 # 安装依赖
-RUN pip install primp==0.15.0 duckduckgo-search==8.0.1 && \
-    pip install -r requirements.txt
+RUN pip install --no-cache-dir primp==0.15.0 duckduckgo-search==8.0.1 && \
+    pip install --no-cache-dir -r requirements.txt
 
 # 设置环境变量（告诉 Lambda 用哪个模块和函数作为 handler）
 ENV _HANDLER=lambda.handler

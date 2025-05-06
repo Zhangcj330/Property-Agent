@@ -40,7 +40,7 @@ from app.services.planning_service import get_planning_info
 from app.services.investment_service import InvestmentService
 from app.services.duckduckgo_search import DuckDuckGoSearchResults
 from app.services.sql_service import SQLService
-from IPython.display import Image, display
+
 from dotenv import load_dotenv
 load_dotenv(dotenv_path='.env')
 
@@ -628,8 +628,6 @@ agent_builder.add_edge("response", END)
 # Compile the agent
 agent = agent_builder.compile()
 
-# Show the agent graph
-display(Image(agent.get_graph(xray=True).draw_mermaid_png()))
 
 """
 You must ask the user a structured series of questions to fully understand their intent and preferences.

@@ -2,6 +2,7 @@
 fastapi
 uvicorn
 mangum  # AWS Lambda部署支持
+awslambdaric
 
 # AI和LLM相关
 langchain
@@ -25,11 +26,10 @@ httpx
 
 # 网页处理
 beautifulsoup4
-fake-useragent
+fake_useragent
 
 # 辅助工具
 python-dotenv
 typing_extensions
-IPython  # 笔记本支持
 python-json-logger  # 结构化日志输出
 backoff
