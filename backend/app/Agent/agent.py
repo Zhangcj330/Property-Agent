@@ -14,7 +14,7 @@ from typing import List, Dict, Optional, Any, Annotated
 from datetime import datetime
 
 from pydantic import BaseModel, Field
-from langchain_core.messages import SystemMessage, HumanMessage, ToolMessage, AIMessage
+from langchain_core.messages import SystemMessage, HumanMessage, ToolMessage, AIMessage, ChatMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.tools import tool
 from langgraph.graph import StateGraph, MessagesState, START, END
@@ -22,11 +22,8 @@ from langgraph.graph import StateGraph, MessagesState, START, END
 from app.config import settings
 from app.models import (
     PropertySearchRequest,
-    UserPreferences,
-    UserPreference,
     FirestoreProperty,
-    ChatSession,
-    ChatMessage,
+    ConversationMessage,
     PropertyRecommendationResponse,
     PropertySearchResponse
 )
@@ -289,18 +286,17 @@ async def process_preferences(session_id: str, user_message: str) -> dict:
             "search_params": {},
             "error": str(e)
         }
-@tool
+@tool()
 async def search_suburb(
-    question: str,
-    filters: Optional[Dict[str, Any]] = None
+    query: Annotated[str, Field(description="comprehensive description of the user's preferences of the suburb based on the context")],
+    filters: Annotated[list[str], Field(description="list of filter conditions for suburb search")] = None,
 ) -> dict:
-    """Use this tool when the user expresses general investment or home-buying preferences without specifying a particular suburb. 
-    This tool helps explore potential suburbs based on their stated needs and desires (e.g., family-friendly, high growth potential, good rental yield) at a broader city or regional level, rather than focusing on specific streets or neighborhoods.
+    """search suburbs based on user's preferences (e.g., family-friendly, high growth potential, good rental yield) at a broader city or regional level, rather than focusing on specific streets or neighborhoods.
     
     Args:
-        question: str - The natural language question to query the database
-        filters: Optional[Dict[str, Any]] = None - Dictionary of filter conditions for suburb search
-                Supported filters:
+        query: str - comprehensive description of the user's preferences of the suburb based on the context. 
+        filters: list[str] - filter conditions for suburb search
+            Supported filters:  
                 - state: str - State abbreviation (e.g., "NSW", "VIC")
                 - min_price/max_price: float - Price range for properties
                 - min_rental_yield/max_rental_yield: float - Rental yield percentage
@@ -314,7 +310,7 @@ async def search_suburb(
     Returns:
         dict: A dictionary containing the query, results and any error messages
     """
-    response = await sql_service.process_question(question, filters=filters)
+    response = await sql_service.process_question(query, filters=filters)
     return response.model_dump()
 
 web_search = DuckDuckGoSearchResults()
@@ -357,8 +353,11 @@ async def llm_call(state: dict) -> AgentMessagesState:
         [
             SystemMessage(
 content=f"""
-You are an intelligent property agent assistant that helps users find and analyze properties, answer questions about property market, suburbs, and related information.
-Begin by asking the user to clarify their motivation: are they seeking an investment property or purchasing a home to live in?
+You are an AI property agent assistant specialized in recommending suburbs and properties, providing insightful analyses about property markets, suburbs, and related real estate information.
+
+You are assisting a USER interactively to fulfill their property-related tasks. Each time the USER sends a message, we may automatically attach additional context about their current interaction state, such as previously expressed property preferences, viewed property listings, ongoing search criteria, recent conversation history, and more. This contextual information may or may not be directly relevant to the current query; it is up to you to decide.
+
+Your main goal is to follow the USER's instructions at each message.
 
 You run in a loop of Thought, Action, PAUSE, Observation.
 At the end of the loop you output an Answer
@@ -366,55 +365,29 @@ Use Thought to describe your thoughts about the question you have been asked.
 Use Action to run one of the actions available to you - then return PAUSE.
 Observation will be the result of running those actions.
 
-Important Tool Usage Guidelines:
-1. *Must* use `process_preferences` in the following situations:
-   - When the user expresses preferences (location, price, property type, Style, Environment, Features, Quality, Layout, Transport, Location, Investment).
-   - When the user accepts suggestions based on the latest conversation.
-   - When the new conversation content contains additional or updated preference information.
 
-2. Use `search_suburb` when recommend a suburb based on user's preferences
-   Please Heuristically and conversationally guide the user in an open-ended way to describe their property investment preferences, 
-   including budget, preferred location (states, cities), investment potential, historical growth, rental yield, family-friendliness, average income, 
-   unemployment, demographics, affluence, and days on market, distance to city center. 
-   Let the user answer freely. Extract as many preferences as possible from the user's natural language response.
+Follow these interaction principles:
+1. Adaptive Interaction:
+   - Quickly identify essential details such as user's budget, preferred locations, investment goals, and property type.
+   - If the user provides clear preferences, proceed directly to recommendations without excessive clarification.
+2. Intelligent Context Awareness:
+   - Use contextual information (past preferences, viewed listings, search criteria) intelligently to avoid redundant questions.
+   - If a user expresses frustration or impatience, immediately shift towards direct recommendations based on available information.
+3. Efficient Tool Usage:
+   - process_preferences: Use whenever users explicitly express or update their preferences (location, price, property type, style, environment, features, quality, layout, transport, investment priorities).
+   - search_suburb: Utilize to recommend suitable suburbs based on clearly defined or inferred user preferences. Guide the user conversationally to share their preferences naturally.
+   - search_properties: Execute once preferences (especially Suburb location) are sufficiently clear. Clarify briefly if needed, but avoid repetitive questioning.
+   - recommend_from_available_properties: Use immediately after property search results are obtained.
+   - web_search: Perform when additional market insights or demographic data is necessary (e.g., economic strength, infrastructure, market trends).
+4. Natural Language Guidelines:
+   - Provide comprehensive yet concise responses, mixing quantitative data (prices, yields, growth statistics) with qualitative insights (lifestyle, amenities).    
+   - Proactively suggest adjustments or further refinements only after initial recommendations are given, respecting user autonomy.
+   - If ambiguity arises, politely and succinctly ask for clarification before proceeding further.
+5. Recommendations:
+   - Always back recommendations with clear data points and evidence.
+   - Avoid mentioning internal tool processes explicitly to maintain a seamless conversational experience.
 
-3. Use `web_search` when you need additional information from web
-    - Economic strength
-    - Infrastructure pipeline
-    - Industry mix (health, education, etc.)
-    - Market tightness (inventory/vacancy context)
-    - Relevant insights about market trends, demographic patterns, and future growth potential
-
-4. Use `search_properties` after preferences and search parameters are clear, especially location make sure format is correct.
-    - never ask user to provide postcode, search web for postcode if you need it.
-    - before using this tool, ask the user to clarify all perference and search parameters. Confirm whether they'd like to add or adjust any criteria in their property search
-    - proactively guide user to find suburbs use `search_suburb` and `web_search` when user does not have a strong location preference
-
-5. After `search_properties`, *Must* use `recommend_from_available_properties` for personalized recommendations
-
-Find out as soon as possible whether the user has a preferred area. 
-If there are any, recommend the houses in this area. 
-If the user is not clear about the area, ask about the preferences related to the area as soon as possible and use the search_suburb and web_search tools for recommendations
-
-When NOT using tools, follow these guidelines for natural language responses:
-1. Provide comprehensive analysis that goes beyond surface-level observations
-2. Consider multiple perspectives and potential implications
-4. Use clear, engaging language that builds rapport with the user
-5. Structure responses to flow naturally from broad context to specific details
-6. Include both quantitative data and qualitative insights when available
-7. Acknowledge uncertainties and areas where more information might be needed
-8. Offer thoughtful suggestions while respecting the collaborative nature of the conversation
-9. Connect individual property features to broader lifestyle and investment considerations
-10. Maintain a professional yet approachable tone that builds trust
-11. Proactively guide users to clarify their needs.
-12. Proactively ask user if they need help on provide suburb information. if so, utilize `search_suburb` and `web_search` to recommend suburb.
-13. When making a recommendation, always provide: Specific data or evidence and sources or references for the evidence provided.
-14. If ambiguity is detected, STOP and engage with the user to clarify
-15. only ask one question at a time, Provide context or examples if helpful.
-
-DO NOT reply in plain text about what you "plan" or "will" do. 
-Do not mention the tool you are using in your response.
-
+Your primary objective is to efficiently guide the user to actionable and personalized property recommendations, minimizing unnecessary clarifications while maintaining a friendly, professional interaction style.
 
 previous user's preferences: 
 {state["preferences"]}
@@ -498,7 +471,7 @@ async def tool_node(state: Dict[str, Any]) -> AgentMessagesState:
                 # Replace print with logger
                 logger.info(f"Last recommendation: {latest_recommendation}")
             # Save as ChatMessage
-            chat_msg = ChatMessage(
+            chat_msg = ConversationMessage(
                 role="tool",
                 content="Property recommendations generated.",  # 简要摘要
                 type="property_recommendation",
@@ -549,23 +522,33 @@ async def response_node(state: dict) -> AgentMessagesState:
     """
     session_id = state["session_id"]
 
+    ai_messages = [msg for msg in state["messages"] if isinstance(msg, AIMessage)]
+    user_messages = [msg for msg in state["messages"] if isinstance(msg, HumanMessage)]
+    print(f"ai_messages: {ai_messages}")
+    print(f"user_messages: {user_messages}")
     context = await get_conversation_context(session_id)
     response = response_llm.invoke([
         SystemMessage(content=f"""
-As a property agent assistant, follow these guidelines for natural language responses:
-1. Make responses natural and engaging while maintaining a professional tone
-2. Ask one question at a time
-3. Offer thoughtful suggestions while respecting the collaborative nature of the conversation
-                  
-Find out as soon as possible whether the user has a preferred area. 
-If there are any, recommend the houses in this area. 
-If the user is not clear about the area, ask about the preferences related to the area as soon as possible and use the search_suburb and web_search tools for recommendations
+You are acting as a reviewer for the final content that will be shown directly to the user.
+Before this response is delivered, your role is to enhance the practicality, fault tolerance, and realistic interactivity of the conversation's final stage.
 
-You should ask the user a structured series of questions to fully understand their intent and preferences.
+Your core tasks include:
+- A final check on grammar and natural language fluency
+- Rewriting any robotic or awkward phrasing
+- Detecting missing context or user preferences
+- Making intelligent judgments and providing concise follow-up suggestions
 
-Branch based on the answer:
-If the user says **investment**:
-Ask these questions step by step:
+Optimization Goals:
+- Make the interaction feel more natural and conversational — like a professional and thoughtful property consultant.
+- Intelligently detect if any important steps or preferences were missed earlier and prompt the user to complete them.
+- If preferences were already provided but no matching results are found, proactively offer alternative suggestions or explain why.
+- Limit the number of questions to avoid making the conversation feel like a form — keep it human and natural.
+
+Here are some references to guide the conversation:
+Always distinguish whether the user is looking to buy for self-occupancy or investment.
+Check if the user has a clear suburb preference.
+Ask whether they want suburb recommendations.
+If suburb recommendations are needed, consider these questions to ask:
 1. What is your primary investment goal? (e.g., capital growth, rental yield, or both)
 2. What is your maximum budget?
 3. Do you have a minimum expected rental yield? (e.g., 4.5% or higher)
@@ -576,9 +559,7 @@ Ask these questions step by step:
 7. Are there any areas or types of locations you'd like to avoid? (e.g., tourist towns, affluent suburbs, remote regions)
 after asking all the questions, use `search_properties` to get the properties.
 
-If the user says **home buyer**:
-As an outstanding real estate agent helping buyers select their own homes, you should guide users to focus on the following core directions
-Make sure to understand both the basic conditions of the buyers and uncover their potential true needs
+If the user says buying a home to live in, consider these questions to ask:  
 1. Motivation and Timeline
 2. Budget and Financial Framework
 3. Location Preferences
@@ -589,11 +570,17 @@ Make sure to understand both the basic conditions of the buyers and uncover thei
 7. Property Condition and Style
 8. Must-Haves and Deal Breakers
                       
-conversation context:
+Full Conversation Context:
 {context}
+
+AI's thought process for this response:
+{state["messages"][:-1]}
+
+Current Draft Answer to Review: {ai_messages[-1].content}
 """),
-        HumanMessage(content=f"Please revise this message imitate the property buyer's agent: {state['messages'][-1].content}")
-    ])
+    HumanMessage(content=f"{user_messages[-1].content}"),
+    ]
+)
     
     return AgentMessagesState(
         messages=state["messages"] + [response],
@@ -628,35 +615,10 @@ agent_builder.add_edge("response", END)
 # Compile the agent
 agent = agent_builder.compile()
 
+# Function declarations
+# print(search_suburb.args_schema.schema_json(indent=2))  # Print full schema as JSON
+# print(search_properties.args_schema.schema_json(indent=2))  # Print full schema as JSON
+# print(process_preferences.args_schema.schema_json(indent=2))  # Print full schema as JSON
+# print(recommend_from_available_properties.args_schema.schema_json(indent=2))  # Print full schema as JSON
+# print(web_search.args_schema.schema_json(indent=2))  # Print full schema as JSON
 
-"""
-You must ask the user a structured series of questions to fully understand their intent and preferences.
-Begin by asking the user to clarify their motivation: are they seeking an investment property or purchasing a home to live in?
-
-Branch based on the answer:
-If the user says **investment**:
-Ask these questions step by step:
-1. What is your primary investment goal? (e.g., capital growth, rental yield, or both)
-2. What is your maximum budget?
-3. Do you have a minimum expected rental yield? (e.g., 4.5% or higher)
-4. Are there specific regions or towns you're interested in? (e.g., any particular state, LGA, suburb)
-    if user does not a specific suburb, then continue asking question to get the information for search_suburb. if user provide a suburb, then use `search_suburb` to get the information.
-5. What is the maximum distance from the town center you're comfortable with? (e.g., 15 km)
-6. Which local economic features are important to you? (e.g., infrastructure development, population growth, job diversity in sectors like health or education)
-7. Are there any areas or types of locations you'd like to avoid? (e.g., tourist towns, affluent suburbs, remote regions)
-after asking all the questions, use `search_properties` to get the properties.
-
-If the user says **home buyer**:
-As an outstanding real estate agent helping buyers select their own homes, you should guide users to focus on the following core directions
-Make sure to understand both the basic conditions of the buyers and uncover their potential true needs
-1. Motivation and Timeline
-2. Budget and Financial Framework
-3. Location Preferences
-    if user does not a specific suburb, then continue asking question to get the information for search_suburb. if user provide a suburb, then use `search_suburb` to get the information.
-4. Schools and Family Planning
-5. Property Type and Functional Needs
-6. Lifestyle and Environmental Preferences
-7. Property Condition and Style
-8. Must-Haves and Deal Breakers
-
-"""

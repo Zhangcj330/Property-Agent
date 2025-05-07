@@ -10,9 +10,9 @@ from contextlib import contextmanager
 
 class SQLQueryRequest(BaseModel):
     """Request model for SQL query generation"""
-    user_question: str
+    user_query: str
     table_schema: Optional[str] = None
-    filters: Optional[Dict[str, Any]] = None
+    filters: Optional[list[str]] = None
     
 class SQLQueryResponse(BaseModel):
     """Response model for SQL query execution"""
@@ -130,7 +130,7 @@ class SQLService:
                     continue
 
         context = f"""
-You are an expert SQL query generator. Your task is to convert natural language questions into SQL queries for a DuckDB database.
+You are an expert SQL query generator, specializing in real estate data. Your task is to convert natural language queries into SQL queries for a DuckDB database to **search and retrieve detailed suburb-level property information**.
 In addition to SQL syntax, you must also reason about geographic references in the user's query.
 
 Database Schema:
@@ -139,21 +139,32 @@ Database Schema:
 Sample Data:
 {"".join(sample_data)}
 
+User Intent:
+{request.user_query or ''}
+
 Additional Context:
 {request.filters or ''}
 
-Rules:
-1. Generate ONLY the raw SQL query, no markdown formatting, no explanations or additional text
-2. Use proper SQL syntax for DuckDB
-3. Always use appropriate table aliases and column references
-4. Use appropriate aggregation functions when needed
-5. Limit results to a reasonable number (e.g., LIMIT 10) unless specifically asked for more
-6. Format numbers and dates appropriately
-7. Use clear and descriptive column aliases for computed values
-8. Use the sample data as reference for column values and data patterns
-9. Consider data types and formats shown in the sample data
+Your Responsibilities:
+1. Understand the user's geographic or property-related search intent.
+2. Retrieve **suburb-level property insights**, such as:
+   - suburb_name
+   - state
+   - median_price
+   - rental_yield
+   - annual_growth
+   - number_of_listings
+   - demographics (if available)
+3. Add computed fields where helpful (e.g., price per bedroom, yield bands).
+4. Use meaningful column aliases for any computed values.
+5. Use appropriate filters, sorting, or grouping based on user needs.
+6. Limit results to a reasonable number (e.g., LIMIT 10) unless specified otherwise.
+7. If possible, apply multiple sorting criteria to recommend options that best match the user's needs.
 
-Question: {request.user_question}
+Rules:
+- Generate **only** the raw SQL query (no explanations, markdown, or comments).
+- Use correct DuckDB syntax and apply table aliases.
+- Reference sample data to ensure correct value formats, column names, and data types.
 
 SQL Query:
 """
@@ -208,11 +219,11 @@ SQL Query:
                 error=str(e)
             )
 
-    async def process_question(self, question: str, filters: Optional[Dict[str, Any]] = None) -> SQLQueryResponse:
+    async def process_question(self, query: str, filters: str = None) -> SQLQueryResponse:
         """Process a natural language question and return query results"""
         # Generate query
         query = await self.generate_sql_query(SQLQueryRequest(
-            user_question=question,
+            user_query=query,
             filters=filters
         ))
         

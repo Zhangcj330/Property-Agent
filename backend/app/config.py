@@ -21,8 +21,9 @@ else:
 # Firebase config loader
 def load_firebase_config() -> Dict:
     """
-    Load Firebase credentials from environment variable.
-    If parsing fails or the variable is missing, log a warning.
+    Load Firebase credentials from environment variable or fallback file.
+    Returns:
+        dict: Parsed service account credentials
     """
     credentials_str = os.getenv("FIREBASE_CREDENTIALS") or os.getenv("FIREBASE_CREDENTIALS_JSON")
 
@@ -31,10 +32,21 @@ def load_firebase_config() -> Dict:
             credentials = json.loads(credentials_str)
             logger.info("Firebase credentials successfully loaded from environment variable.")
             return credentials
-        except json.JSONDecodeError:
-            logger.warning("Failed to parse Firebase credentials from environment variable.")
+        except json.JSONDecodeError as e:
+            logger.warning(f"Failed to parse Firebase credentials from environment variable: {e}")
+
+    # Fallback to file
+    fallback_path = BASE_DIR / "Firebase_key.json"
+    if fallback_path.exists():
+        try:
+            with open(fallback_path, "r") as f:
+                credentials = json.load(f)
+                logger.info(f"Firebase credentials successfully loaded from file: {fallback_path}")
+                return credentials
+        except Exception as e:
+            logger.warning(f"Failed to load Firebase credentials from file: {e}")
     else:
-        logger.warning("FIREBASE_CREDENTIALS environment variable is not set.")
+        logger.warning(f"Firebase_key.json not found at: {fallback_path}")
 
     return {}
 

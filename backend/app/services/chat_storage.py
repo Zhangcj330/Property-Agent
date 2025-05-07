@@ -2,7 +2,7 @@ from typing import List, Optional, Dict
 from datetime import datetime
 from google.cloud import firestore
 from google.oauth2 import service_account
-from ..models import ChatMessage, ChatSession
+from ..models import ConversationMessage, ChatSession
 from ..config import settings
 
 class ChatStorageService:
@@ -69,7 +69,7 @@ class ChatStorageService:
             print(f"Error in get_session: {str(e)}")
             return None
 
-    async def save_message(self, session_id: str, message: ChatMessage):
+    async def save_message(self, session_id: str, message: ConversationMessage):
         """保存新消息到会话
         
         Args:

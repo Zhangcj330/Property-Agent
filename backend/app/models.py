@@ -272,7 +272,7 @@ class PropertyRecommendationResponse(BaseModel):
     """Response model for property recommendations"""
     properties: List[PropertyWithRecommendation]
 
-class ChatMessage(BaseModel):
+class ConversationMessage(BaseModel):
     """单条聊天消息模型，支持 user/assistant/tool 消息和类型、元数据"""
     role: Literal["user", "assistant", "tool"] = Field(..., description="消息角色：'user'、'assistant' 或 'tool'")
     content: str = Field(..., description="消息内容")
@@ -284,7 +284,7 @@ class ChatMessage(BaseModel):
 class ChatSession(BaseModel):
     """聊天会话模型"""
     session_id: str = Field(..., description="会话唯一标识符")
-    messages: List[ChatMessage] = Field(default_factory=list, description="会话中的所有消息")
+    messages: List[ConversationMessage] = Field(default_factory=list, description="会话中的所有消息")
     created_at: datetime = Field(default_factory=datetime.now)
     last_active: datetime = Field(default_factory=datetime.now)
     preferences: Optional[Dict] = Field(default=None, description="用户偏好")

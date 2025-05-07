@@ -7,7 +7,7 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from app.config import settings
-from app.models import ChatSession, ChatMessage
+from app.models import ConversationMessage
 from app.services.chat_storage import ChatStorageService
 
 class PreferenceService:
@@ -74,7 +74,7 @@ class PreferenceService:
         
         return preferences, search_params
     
-    def _prepare_conversation_context(self, messages: List[ChatMessage]) -> str:
+    def _prepare_conversation_context(self, messages: List[ConversationMessage]) -> str:
         """Prepare conversation context from recent messages"""
         if not messages:
             return "No dialogue history"
@@ -309,7 +309,7 @@ Generate a valid JSON response with the above structure. Include ONLY fields tha
             
             await self.chat_storage.save_message(
                 session_id,
-                ChatMessage(
+                ConversationMessage(
                     role="assistant",
                     content="\n".join(log_message),
                     timestamp=datetime.now()
