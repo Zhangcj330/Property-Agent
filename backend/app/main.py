@@ -1,19 +1,10 @@
 from fastapi import FastAPI, Depends, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from .services.image_processor import ImageProcessor
-from .services.recommender import PropertyRecommender
 from .models import FirestoreProperty, PropertyRecommendationResponse, PropertyWithRecommendation
 from pydantic import BaseModel, Field
 from typing import List, Dict, Optional
-from .services.property_scraper import PropertyScraper
-from .services.firestore_service import FirestoreService
-from langchain_core.messages import SystemMessage, HumanMessage, AIMessage, ChatMessage
-from .Agent.agent import agent
-from .services.chat_storage import ChatStorageService
+from langchain_core.messages import HumanMessage, ChatMessage
 from datetime import datetime
-from mangum import Mangum  
-import boto3
-import uuid
 import logging
 import os
 import json
@@ -22,6 +13,46 @@ import json
 logger = logging.getLogger(__name__)
 
 app = FastAPI()
+
+# Lazy load services on demand to reduce cold start time
+_services = {}
+
+def get_firestore_service():
+    """Get the FirestoreService instance (lazy loading)"""
+    if "firestore_service" not in _services:
+        from .services.firestore_service import FirestoreService
+        logger.info("Initializing FirestoreService")
+        _services["firestore_service"] = FirestoreService()
+    return _services["firestore_service"]
+
+def get_chat_storage():
+    """Get the ChatStorageService instance (lazy loading)"""
+    if "chat_storage" not in _services:
+        from .services.chat_storage import ChatStorageService
+        logger.info("Initializing ChatStorageService")
+        _services["chat_storage"] = ChatStorageService()
+    return _services["chat_storage"]
+
+def get_agent():
+    """Get the LangGraph agent (lazy loading)"""
+    if "agent" not in _services:
+        from .Agent.agent import agent
+        logger.info("Initializing LangGraph agent")
+        _services["agent"] = agent
+    return _services["agent"]
+
+def get_boto3_client(service_name):
+    """Get a boto3 client (lazy loading)"""
+    if f"boto3_{service_name}" not in _services:
+        import boto3
+        logger.info(f"Creating boto3 {service_name} client")
+        _services[f"boto3_{service_name}"] = boto3.client(
+            service_name,
+            aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
+            aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'),
+            region_name=os.environ.get('AWS_REGION', 'ap-northeast-1')
+        )
+    return _services[f"boto3_{service_name}"]
 
 # 添加健康检查端点 - 多种路径格式，确保至少一个能匹配
 @app.get("/")
@@ -86,16 +117,6 @@ app.add_middleware(
     allow_headers=["*"],  # 允许所有头部
 )
 
-# Initialize services
-# property_api = PropertyAPI(settings.DOMAIN_API_KEY)
-image_processor = ImageProcessor()
-recommender = PropertyRecommender()
-property_scraper = PropertyScraper()
-
-
-# Initialize Firestore service
-firestore_service = FirestoreService()
-
 class ChatInput(BaseModel):
     session_id: Optional[str] = None  # 确保默认值为 None
     user_input: str = Field(..., min_length=1)  # 确保用户输入不为空
@@ -150,9 +171,12 @@ async def agent_chat_endpoint(chat_input: ChatInput):
         # Ensure session_id exists
         session_id = chat_input.session_id if chat_input.session_id else str(uuid.uuid4())
         logger.info(f"Using agent session_id: {session_id}")
-        # Ensure session exists
-        chat_storage = ChatStorageService()
+        
+        # Lazy load services
+        chat_storage = get_chat_storage()
+        agent = get_agent()
 
+        # Ensure session exists
         session = await chat_storage.get_session(session_id)
         if not session:
             session = await chat_storage.create_session(session_id)
@@ -216,6 +240,7 @@ async def save_property_to_session(
 ):
     """Save a property with its recommendation to a session's saved properties list"""
     try:
+        firestore_service = get_firestore_service()
         success = await firestore_service.save_property_to_session(
             session_id=session_id,
             property_with_recommendation=property_with_recommendation
@@ -232,6 +257,7 @@ async def save_property_to_session(
 async def get_saved_properties(session_id: str):
     """Get all saved properties with recommendations for a session"""
     try:
+        firestore_service = get_firestore_service()
         properties = await firestore_service.get_saved_properties(session_id)
         return {
             "session_id": session_id,
@@ -247,6 +273,7 @@ async def remove_saved_property(
 ):
     """Remove a property from a session's saved properties list"""
     try:
+        firestore_service = get_firestore_service()
         success = await firestore_service.remove_saved_property(session_id, property_id)
         return {
             "status": "success" if success else "error",
@@ -260,7 +287,7 @@ async def remove_saved_property(
 async def get_conversation_history(session_id: str):
     """Get all conversation messages for a session (for chat window rendering)"""
     try:
-        chat_storage = ChatStorageService()
+        chat_storage = get_chat_storage()
         session = await chat_storage.get_session(session_id)
         if not session:
             raise HTTPException(status_code=404, detail="Session not found")
@@ -302,13 +329,9 @@ async def get_presigned_url(image_type: str = "jpeg"):
         content_type = allowed_types[image_type]
         file_extension = "jpg" if image_type in ["jpeg", "jpg"] else image_type
         
-        # 配置S3客户端
-        s3_client = boto3.client(
-            's3',
-            aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
-            aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'),
-            region_name=os.environ.get('AWS_REGION', 'ap-northeast-1')
-        )
+        # 使用懒加载获取S3客户端
+        import uuid
+        s3_client = get_boto3_client('s3')
         
         # 生成唯一的图片键
         image_key = f"feedback-screenshots/{uuid.uuid4()}.{file_extension}"
@@ -345,8 +368,10 @@ async def get_presigned_url(image_type: str = "jpeg"):
 async def save_feedback(feedback: FeedbackInput):
     """Save user feedback with optional screenshot URL"""
     try:
-        # 初始化Firestore服务
-        firestore_service = FirestoreService()
+        # 初始化Firestore服务 - 懒加载模式
+        firestore_service = get_firestore_service()
+        import uuid
+        
         # 如果有图片键，构建完整的S3公共URL
         screenshot_url = None
         if feedback.image_key:
@@ -374,8 +399,8 @@ async def save_feedback(feedback: FeedbackInput):
             detail=f"Error saving feedback: {str(e)}"
         )
 
-# 创建Lambda处理器
-handler = Mangum(app)
+# 创建Lambda处理器 - moved to lambda.py for deferred loading
+# handler = Mangum(app)
 
 # 用于本地开发的入口点
 if __name__ == "__main__":

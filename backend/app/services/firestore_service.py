@@ -5,14 +5,43 @@ from app.services.image_processor import PropertyAnalysis
 from app.config import settings
 from datetime import datetime
 import uuid
+import logging
+
+logger = logging.getLogger(__name__)
 
 class FirestoreService:
     def __init__(self):
-        # Initialize with credentials dictionary
-        self.db = firestore.Client.from_service_account_info(settings.FIREBASE_CONFIG)
-        self.properties_collection = self.db.collection('properties')
-        self.saved_properties_collection = self.db.collection('saved_properties')
-        self.feedback_collection = self.db.collection('feedback')
+        # Don't initialize Firebase connections immediately
+        self._db = None
+        self._properties_collection = None
+        self._saved_properties_collection = None
+        self._feedback_collection = None
+    
+    @property
+    def db(self):
+        if self._db is None:
+            # Initialize with credentials dictionary only when needed
+            logger.info("Initializing Firestore connection")
+            self._db = firestore.Client.from_service_account_info(settings.FIREBASE_CONFIG)
+        return self._db
+    
+    @property
+    def properties_collection(self):
+        if self._properties_collection is None:
+            self._properties_collection = self.db.collection('properties')
+        return self._properties_collection
+    
+    @property
+    def saved_properties_collection(self):
+        if self._saved_properties_collection is None:
+            self._saved_properties_collection = self.db.collection('saved_properties')
+        return self._saved_properties_collection
+    
+    @property
+    def feedback_collection(self):
+        if self._feedback_collection is None:
+            self._feedback_collection = self.db.collection('feedback')
+        return self._feedback_collection
 
     async def save_property(self, property_data: Union[PropertySearchResponse, FirestoreProperty]) -> str:
         """Save or update a property listing
@@ -55,7 +84,7 @@ class FirestoreService:
             return firestore_property.listing_id
             
         except Exception as e:
-            print(f"Error saving property: {str(e)}")
+            logger.error(f"Error saving property: {str(e)}")
             raise
 
     async def update_property_analysis(self, listing_id: str, analysis: PropertyAnalysis) -> bool:
@@ -70,7 +99,7 @@ class FirestoreService:
             })
             return True
         except Exception as e:
-            print(f"Error updating analysis: {str(e)}")
+            logger.error(f"Error updating analysis: {str(e)}")
             raise
 
     async def get_property(self, listing_id: str) -> Optional[FirestoreProperty]:
