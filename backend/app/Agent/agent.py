@@ -275,7 +275,7 @@ async def search_properties(
     search_request = PropertySearchRequest(**search_params)
     
     search_start = time.time()
-    results = await property_scraper.search_properties(search_request, max_results=10)
+    results = await property_scraper.search_properties(search_request, max_results=5)
     search_end = time.time()
     logger.info(f"Property search took {search_end - search_start:.2f}s, found {len(results)} properties")
     

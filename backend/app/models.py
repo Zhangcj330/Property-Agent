@@ -2,6 +2,7 @@ from pydantic import BaseModel, Field
 from typing import Optional, List, Dict, Tuple, Any, Union
 from typing_extensions import TypedDict, Literal
 from datetime import datetime
+import re
 
 class UserPreference(TypedDict):
     """User preference for property search"""
@@ -134,14 +135,25 @@ class FirestoreProperty(BaseModel):
         price_is_numeric = False
         
         if response.price:
-            if any(c.isdigit() for c in response.price):
+            # 处理价格范围 "$X to $Y"
+            price_range_match = re.search(r'\$(\d+(?:,\d+)*)\s+to\s+\$(\d+(?:,\d+)*)', response.price)
+            if price_range_match:
                 try:
-                    numeric_string = ''.join(c for c in response.price if c.isdigit() or c == '.')
-                    if numeric_string:
-                        price_value = float(numeric_string)
-                        price_is_numeric = True
+                    min_price = float(price_range_match.group(1).replace(',', ''))
+                    max_price = float(price_range_match.group(2).replace(',', ''))
+                    price_value = (min_price + max_price) / 2  # 取中间值
+                    price_is_numeric = True
                 except (ValueError, AttributeError):
                     price_value = None
+            else:
+                # 提取$后面的数字
+                price_match = re.search(r'\$(\d+(?:,\d+)*)', response.price)
+                if price_match:
+                    try:
+                        price_value = float(price_match.group(1).replace(',', ''))
+                        price_is_numeric = True
+                    except (ValueError, AttributeError):
+                        price_value = None
         
         # 提取卧室数量
         try:
@@ -235,7 +247,11 @@ class FirestoreProperty(BaseModel):
     def to_search_response(self) -> PropertySearchResponse:
         """Convert back to PropertySearchResponse"""
         # 将数值转换回字符串格式
-        price_str = f"${self.basic_info.price_value:,.0f}" if self.basic_info.price_value else "Contact agent"
+        if self.basic_info.price_value:
+            price_str = f"${self.basic_info.price_value:,.0f}"
+        else:
+            price_str = "Contact agent"
+            
         bedrooms_str = str(self.basic_info.bedrooms_count) if self.basic_info.bedrooms_count is not None else "0"
         bathrooms_str = str(self.basic_info.bathrooms_count) if self.basic_info.bathrooms_count is not None else "0"
         
