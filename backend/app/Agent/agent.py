@@ -4,6 +4,7 @@ from pathlib import Path
 import asyncio
 import json
 import logging
+import time
 
 # Add the backend directory to Python path
 backend_dir = Path(__file__).parent.parent.parent
@@ -109,90 +110,123 @@ async def get_session_state(session_id: str) -> dict:
 
 async def process_property(result: PropertySearchResponse) -> FirestoreProperty:
     # Convert to FirestoreProperty
+    import time
+    start_time = time.time()
+    
     firestore_property = FirestoreProperty.from_search_response(result)
     
     # Check if property exists in Firestore with analysis
+    firestore_start = time.time()
     stored_property = await firestore_service.get_property(firestore_property.listing_id)
+    firestore_end = time.time()
+    logger.info(f"Firestore get_property took {firestore_end - firestore_start:.2f}s for {firestore_property.listing_id}")
     
     if stored_property and stored_property.analysis:
         # Use existing analysis if available
+        logger.info(f"Using cached property data for {firestore_property.listing_id}")
         return stored_property
     
-    # Initialize tasks list
+    # 直接创建任务对象，不使用内部异步函数包装
     tasks = []
+    task_times = {}
+    task_infos = {}
+    
+    # 记录任务创建和开始时间
+    task_creation_start = time.time()
     
     # Add planning info task if address available
+    planning_task = None
     if firestore_property.basic_info.full_address:
-        async def get_planning():
-            try:
-                planning_info = await get_planning_info(firestore_property.basic_info.full_address)
-                if not planning_info.error:
-                    firestore_property.planning_info = planning_info
-            except Exception as e:
-                logger.error(f"Error getting planning info for {firestore_property.listing_id}: {str(e)}")
-        tasks.append(get_planning())
+        planning_task_start = time.time()
+        planning_task = asyncio.create_task(get_planning_info(firestore_property.basic_info.full_address))
+        tasks.append(planning_task)
+        task_infos['planning_task'] = {
+            'start_time': planning_task_start,
+            'address': firestore_property.basic_info.full_address
+        }
     
     # Add investment metrics task if suburb info available
+    investment_task = None
     if firestore_property.basic_info.suburb and firestore_property.basic_info.postcode:
-        async def get_investment():
-            try:
-                investment_metrics = investment_service.get_investment_metrics(
-                    suburb=firestore_property.basic_info.suburb,
-                    postcode=firestore_property.basic_info.postcode,
-                    bedrooms=firestore_property.basic_info.bedrooms_count or 2
-                )
-                firestore_property.investment_info = investment_metrics
-            except Exception as e:
-                logger.error(f"Error getting investment metrics for {firestore_property.listing_id}: {str(e)}")
-        tasks.append(get_investment())
+        investment_start = time.time()
+        investment_metrics = investment_service.get_investment_metrics(
+            suburb=firestore_property.basic_info.suburb,
+            postcode=firestore_property.basic_info.postcode,
+            bedrooms=firestore_property.basic_info.bedrooms_count or 2
+        )
+        investment_end = time.time()
+        task_times['investment_metrics'] = investment_end - investment_start
+        firestore_property.investment_info = investment_metrics
     
     # Add image analysis task if images available
+    image_task = None
     if firestore_property.media.image_urls:
-        async def analyze_images():
-            try:
-                # Create tasks for parallel execution
-                analysis_task = image_processor.analyze_property_image(
-                    ImageAnalysisRequest(image_urls=firestore_property.media.image_urls)
-                )
-                save_property_task = firestore_service.save_property(firestore_property)
-                
-                # Execute image analysis and property save in parallel
-                image_analysis, _ = await asyncio.gather(analysis_task, save_property_task)
-                
-                if image_analysis:
-                    # Update analysis and get the final property in parallel
-                    update_task = firestore_service.update_property_analysis(
-                        firestore_property.listing_id, 
-                        image_analysis
-                    )
-                    get_property_task = firestore_service.get_property(firestore_property.listing_id)
-                    
-                    # Wait for both operations to complete
-                    _, analyzed_property = await asyncio.gather(update_task, get_property_task)
-                    
-                    if analyzed_property:
-                        return analyzed_property
-            except Exception as e:
-                logger.error(f"Error analyzing images for {firestore_property.listing_id}: {str(e)}")
-            return None
-        tasks.append(analyze_images())
+        image_task_start = time.time()
+        image_task = asyncio.create_task(image_processor.analyze_property_image(
+            ImageAnalysisRequest(image_urls=firestore_property.media.image_urls)
+        ))
+        tasks.append(image_task)
+        task_infos['image_task'] = {
+            'start_time': image_task_start,
+            'image_count': len(firestore_property.media.image_urls)
+        }
     
     try:
-        # Run all tasks concurrently and collect results
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+        # 运行所有任务前记录时间
+        gather_prep_start = time.time()
+        logger.info(f"Gather prep start time: {gather_prep_start} for {firestore_property.listing_id}")
+        # 运行所有任务并收集结果
+        if not tasks:
+            logger.info(f"No tasks to run for {firestore_property.listing_id}")
+            results = []
+        else:
+            logger.info(f"Running {len(tasks)} concurrent tasks for {firestore_property.listing_id}")
+            gather_start = time.time()
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            gather_end = time.time()
+            logger.info(f"All tasks gather took {gather_end - gather_start:.2f}s for {firestore_property.listing_id}")
         
-        # Check if any of the results is a valid property (from image analysis)
-        for result in results:
-            if isinstance(result, FirestoreProperty):
-                return result
+        # 处理规划信息结果
+        if planning_task and planning_task in tasks:
+            task_index = tasks.index(planning_task)
+            planning_result = results[task_index]
+            planning_end = time.time()
+            planning_duration = planning_end - task_infos['planning_task']['start_time']
+            task_times['get_planning_info'] = planning_duration
+            
+            if isinstance(planning_result, Exception):
+                logger.error(f"Error in planning info for {firestore_property.listing_id}: {planning_result}")
+            else:
+                firestore_property.planning_info = planning_result
+                logger.info(f"Planning info completed for {firestore_property.listing_id} in {planning_duration:.2f}s")
+        
+        # 处理图像分析结果
+        if image_task and image_task in tasks:
+            task_index = tasks.index(image_task)
+            image_result = results[task_index]
+            image_end = time.time()
+            image_duration = image_end - task_infos['image_task']['start_time']
+            task_times['analyze_images'] = image_duration
+            
+            if isinstance(image_result, Exception):
+                logger.error(f"Error in image analysis for {firestore_property.listing_id}: {image_result}")
+            else:
+                firestore_property.analysis = image_result
+                logger.info(f"Image analysis completed for {firestore_property.listing_id} in {image_duration:.2f}s (analyzed {task_infos['image_task']['image_count']} images)")
                 
     except Exception as e:
         logger.error(f"Error in concurrent processing for {firestore_property.listing_id}: {str(e)}")
     
-    # If we get here, either there were no tasks or no valid property was returned
-    # Save the property if it wasn't saved during image analysis
+    # 如果需要保存属性数据
     if not stored_property:
+        save_start = time.time()
         await firestore_service.save_property(firestore_property)
+        save_end = time.time()
+        logger.info(f"Final save_property took {save_end - save_start:.2f}s for {firestore_property.listing_id}")
+    
+    total_time = time.time() - start_time
+    logger.info(f"Total process_property took {total_time:.2f}s for {firestore_property.listing_id}")
+    logger.info(f"Task times for {firestore_property.listing_id}: {task_times}")
     
     return firestore_property
 
@@ -224,6 +258,9 @@ async def search_properties(
     Returns:
         List of FirestoreProperty objects containing listing properties from the search results. 
     """
+    import time
+    overall_start = time.time()
+    
     search_params = {
         "location": location,
         "min_price": min_price,
@@ -236,14 +273,37 @@ async def search_properties(
         "land_size_to": land_size_to
     }
     search_request = PropertySearchRequest(**search_params)
-    results = await property_scraper.search_properties(search_request, max_results=5)
+    
+    search_start = time.time()
+    results = await property_scraper.search_properties(search_request, max_results=10)
+    search_end = time.time()
+    logger.info(f"Property search took {search_end - search_start:.2f}s, found {len(results)} properties")
+    
     try:
-        firestore_properties = await asyncio.gather(
-            *[process_property(result) for result in results]
-        )
-        return [prop for prop in firestore_properties if prop is not None]
+        # 限制并发处理的批次大小，每批处理2个属性
+        batch_size = 10
+        all_properties = []
+        
+        for i in range(0, len(results), batch_size):
+            batch_start = time.time()
+            batch = results[i:i+batch_size]
+            logger.info(f"Processing batch {i//batch_size + 1}/{(len(results) + batch_size - 1)//batch_size} with {len(batch)} properties")
+            
+            batch_props = await asyncio.gather(*[process_property(result) for result in batch])
+            valid_props = [prop for prop in batch_props if prop is not None]
+            
+            all_properties.extend(valid_props)
+            batch_end = time.time()
+            logger.info(f"Batch {i//batch_size + 1} processing took {batch_end - batch_start:.2f}s, found {len(valid_props)} valid properties")
+        
+        overall_end = time.time()
+        logger.info(f"Total search_properties processing took {overall_end - overall_start:.2f}s, returning {len(all_properties)} properties")
+        
+        return all_properties
     except Exception as e:
         logger.error(f"Error in concurrent property processing: {str(e)}")
+        overall_end = time.time()
+        logger.info(f"Failed search_properties took {overall_end - overall_start:.2f}s")
         return []
 
 @tool

@@ -1,5 +1,7 @@
 import base64
-import requests
+import aiohttp
+import asyncio
+import time
 from typing import Dict, List, Optional, Literal
 from pydantic import BaseModel, Field, HttpUrl
 import json
@@ -8,7 +10,9 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.output_parsers import JsonOutputParser
 from langchain_core.messages import HumanMessage
 from app.config import settings
+import logging
 
+logger = logging.getLogger(__name__)
 
 class VisibleDefects(BaseModel):
     external_cracks: Literal["Absent", "Present"]
@@ -71,14 +75,31 @@ class ImageProcessor:
         )
         self.parser = JsonOutputParser(pydantic_object=PropertyAnalysis)
         
-    def _encode_image_to_base64(self, image_url: str) -> str:
-        """Convert image from URL to base64 string"""
+    async def _encode_image_to_base64(self, image_url: str) -> str:
+        """Convert image from URL to base64 string using aiohttp (async)"""
         try:
-            response = requests.get(str(image_url))
-            response.raise_for_status()
-            base64_encoded = base64.b64encode(response.content)
-            return base64_encoded.decode('utf-8')
-        except requests.exceptions.RequestException as e:
+            download_start = time.time()
+            async with aiohttp.ClientSession() as session:
+                async with session.get(str(image_url), timeout=10) as response:
+                    if response.status != 200:
+                        logger.error(f"Image download error: HTTP {response.status} for {image_url}")
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"Failed to retrieve image from {image_url}. Status: {response.status}"
+                        )
+                    content = await response.read()
+            download_end = time.time()
+            logger.debug(f"Image download took {download_end - download_start:.2f}s for {image_url}")
+            
+            encode_start = time.time()
+            base64_encoded = base64.b64encode(content)
+            result = base64_encoded.decode('utf-8')
+            encode_end = time.time()
+            logger.debug(f"Base64 encoding took {encode_end - encode_start:.2f}s for image size {len(content)/1024:.1f}KB")
+            
+            return result
+        except aiohttp.ClientError as e:
+            logger.error(f"Image download failed: {str(e)} for {image_url}")
             raise HTTPException(
                 status_code=400,
                 detail=f"Failed to retrieve image from {image_url}. Error: {str(e)}"
@@ -86,15 +107,18 @@ class ImageProcessor:
 
     async def analyze_property_image(self, request: ImageAnalysisRequest) -> PropertyAnalysis:
         """Analyze property images and return structured analysis"""
+        overall_start = time.time()
         try:
-            # Convert images to base64
-            base64_strings = [self._encode_image_to_base64(url) for url in request.image_urls]
+            
+            # Convert images to base64 concurrently
+            base64_tasks = [self._encode_image_to_base64(url) for url in request.image_urls]
+            base64_strings = await asyncio.gather(*base64_tasks)
             
             # Get the format instructions from the parser
             format_instructions = self.parser.get_format_instructions()
             
             # Prepare the prompt
-            prompt = f"""Analyze this property image in detail. 
+            prompt = f"""Analyze property images in detail. 
             Focus on real estate relevant details. Be specific about materials, finishes, and architectural elements.
             For quality score, consider factors like materials, maintenance, design coherence, and overall appeal.
             
@@ -114,14 +138,15 @@ class ImageProcessor:
 
             messages = [HumanMessage(content=message_content)]
             
-            # Generate analysis using LLM
-            response = self.client.invoke(messages)
-            
+            # Use ainvoke for asynchronous invocation
+            response = await self.client.ainvoke(messages)
             # Parse the response using the JsonOutputParser
             analysis = self.parser.parse(response.content)
-            
+
             return analysis
             
         except Exception as e:
+            overall_end = time.time()
+            logger.error(f"Image analysis failed after {overall_end - overall_start:.2f}s: {str(e)}")
             raise HTTPException(status_code=500, detail=str(e))
         
