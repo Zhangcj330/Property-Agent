@@ -250,13 +250,11 @@ class DuckDuckGoSearchResults(BaseTool):  # type: ignore[override, override]
     """Tool that queries the DuckDuckGo search API and
     returns the results in `output_format`."""
 
-    name: str = "duckduckgo_results_json"
+    name: str = "duckduckgo_web_search"
     description: str = (
-        "A wrapper around Duck Duck Go Search. "
-        "Useful for when you need to answer questions about current events. "
-        "Input should be a search query."
+        "Search the web for real-time information about any topic. Use this tool when you need up-to-date information that may not be available in your training data or when you need to verify current facts."
     )
-    max_results: int = Field(alias="num_results", default=4)
+    max_results: int = Field(alias="num_results", default=5)
     api_wrapper: DuckDuckGoSearchAPIWrapper = Field(
         default_factory=DuckDuckGoSearchAPIWrapper
     )

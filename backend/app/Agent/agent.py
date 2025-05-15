@@ -36,8 +36,8 @@ from app.services.firestore_service import FirestoreService
 from app.services.preference_service import PreferenceService
 from app.services.planning_service import get_planning_info
 from app.services.investment_service import InvestmentService
-from app.services.duckduckgo_search import DuckDuckGoSearchResults
 from app.services.sql_service import SQLService
+from app.services.duckduckgo_search import DuckDuckGoSearchResults
 
 from dotenv import load_dotenv
 load_dotenv(dotenv_path='.env')
@@ -55,7 +55,7 @@ sql_service = SQLService()  # Initialize SQL service
 llm = ChatGoogleGenerativeAI(
     api_key=settings.GEMINI_API_KEY,
     base_url=settings.BASE_URL,
-    model="gemini-2.0-flash",
+    model="gemini-2.5-flash-preview-04-17",
 )
 
 response_llm = ChatGoogleGenerativeAI(
@@ -76,18 +76,6 @@ class AgentMessagesState(MessagesState):
     latest_recommendation: Optional[PropertyRecommendationResponse] = Field(default=None, description="Last recommendation")
 
 # Tool parameter models
-class ExtractPreferencesInput(BaseModel):
-    session_id: str
-    user_message: str
-
-class HandleRejectionInput(BaseModel):
-    session_id: str
-    rejection_message: str
-    property_details: Dict[str, Any]
-
-class GetSessionStateInput(BaseModel):
-    session_id: str
-
 @tool
 async def get_session_state(session_id: str) -> dict:
     """Get current preferences and search parameters
@@ -131,9 +119,6 @@ async def process_property(result: PropertySearchResponse) -> FirestoreProperty:
     task_times = {}
     task_infos = {}
     
-    # 记录任务创建和开始时间
-    task_creation_start = time.time()
-    
     # Add planning info task if address available
     planning_task = None
     if firestore_property.basic_info.full_address:
@@ -144,19 +129,6 @@ async def process_property(result: PropertySearchResponse) -> FirestoreProperty:
             'start_time': planning_task_start,
             'address': firestore_property.basic_info.full_address
         }
-    
-    # Add investment metrics task if suburb info available
-    investment_task = None
-    if firestore_property.basic_info.suburb and firestore_property.basic_info.postcode:
-        investment_start = time.time()
-        investment_metrics = investment_service.get_investment_metrics(
-            suburb=firestore_property.basic_info.suburb,
-            postcode=firestore_property.basic_info.postcode,
-            bedrooms=firestore_property.basic_info.bedrooms_count or 2
-        )
-        investment_end = time.time()
-        task_times['investment_metrics'] = investment_end - investment_start
-        firestore_property.investment_info = investment_metrics
     
     # Add image analysis task if images available
     image_task = None
@@ -171,6 +143,17 @@ async def process_property(result: PropertySearchResponse) -> FirestoreProperty:
             'image_count': len(firestore_property.media.image_urls)
         }
     
+    # Add investment metrics task if suburb info available
+    if firestore_property.basic_info.suburb and firestore_property.basic_info.postcode:
+        investment_start = time.time()
+        investment_metrics = investment_service.get_investment_metrics(
+            suburb=firestore_property.basic_info.suburb,
+            postcode=firestore_property.basic_info.postcode,
+            bedrooms=firestore_property.basic_info.bedrooms_count or 2
+        )
+        investment_end = time.time()
+        task_times['investment_metrics'] = investment_end - investment_start
+        firestore_property.investment_info = investment_metrics
     try:
         # 运行所有任务前记录时间
         gather_prep_start = time.time()
@@ -242,18 +225,7 @@ async def search_properties(
     land_size_from: Annotated[Optional[float], Field(description="Minimum land size in sqm")] = None,
     land_size_to: Annotated[Optional[float], Field(description="Maximum land size in sqm")] = None
 ) -> List[FirestoreProperty]:
-    """Search on listing website for properties based on given search parameters.
-    
-    Args:
-        location (List[str]): List of locations to search, format: [STATE-SUBURB-POSTCODE, STATE-SUBURB-POSTCODE, ...]
-        min_price (Optional[float]): Minimum price
-        max_price (Optional[float]): Maximum price
-        min_bedrooms (Optional[int]): Minimum number of bedrooms
-        min_bathrooms (Optional[int]): Minimum number of bathrooms
-        property_type (Optional[List[str]]): List of property types (house, apartment, unit, townhouse, villa, rural)
-        car_parks (Optional[int]): Number of car parks
-        land_size_from (Optional[float]): Minimum land size in sqm
-        land_size_to (Optional[float]): Maximum land size in sqm
+    """Fetch listing properties inside a suburb under given constraints.
     
     Returns:
         List of FirestoreProperty objects containing listing properties from the search results. 
@@ -319,15 +291,8 @@ async def recommend_from_available_properties() -> PropertyRecommendationRespons
     return PropertyRecommendationResponse(properties=[])
 
 @tool
-async def process_preferences(session_id: str, user_message: str) -> dict:
-    """Update user preferences and search parameters based on user's conversation
-    
-    Args:
-        session_id: str - The ID of the chat session
-        user_message: str - The user's message to process
-        
-    Returns:
-        dict: A dictionary containing the updated preferences, search parameters
+async def process_preferences(session_id: str, user_message: Annotated[str, Field(description="user's message to process")]) -> dict:
+    """Analyze and store users' preferences for home purchase/investment.
     """
     service = PreferenceService()
     
@@ -348,11 +313,11 @@ async def process_preferences(session_id: str, user_message: str) -> dict:
         }
 @tool()
 async def search_suburb(
-    query: Annotated[str, Field(description="comprehensive description of the user's preferences of the suburb based on the context")],
-    filters: Annotated[list[str], Field(description="list of filter conditions for suburb search")] = None,
+    query: Annotated[str, Field(description="comprehensive description of the user's house preferences of the suburb based on the context")],
+    filters: Annotated[list[str], Field(description="list of filter conditions for suburb search")] = [],
 ) -> dict:
-    """search suburbs based on user's preferences (e.g., family-friendly, high growth potential, good rental yield) at a broader city or regional level, rather than focusing on specific streets or neighborhoods.
-    
+    """Search for suburbs based on preferences for houses (e.g., family-friendly, high growth potential, good rental yield) at a broader city or regional level, rather than focusing on specific streets or neighborhoods.
+
     Args:
         query: str - comprehensive description of the user's preferences of the suburb based on the context. 
         filters: list[str] - filter conditions for suburb search
@@ -419,12 +384,11 @@ You are assisting a USER interactively to fulfill their property-related tasks. 
 
 Your main goal is to follow the USER's instructions at each message.
 
-You run in a loop of Thought, Action, PAUSE, Observation.
-At the end of the loop you output an Answer
+Work in a Thought → Action → PAUSE → Observation loop.
 Use Thought to describe your thoughts about the question you have been asked.
 Use Action to run one of the actions available to you - then return PAUSE.
 Observation will be the result of running those actions.
-
+At the end of the loop you output an Answer to the user's question.
 
 Follow these interaction principles:
 1. Adaptive Interaction:
@@ -434,11 +398,11 @@ Follow these interaction principles:
    - Use contextual information (past preferences, viewed listings, search criteria) intelligently to avoid redundant questions.
    - If a user expresses frustration or impatience, immediately shift towards direct recommendations based on available information.
 3. Efficient Tool Usage:
-   - process_preferences: Use whenever users explicitly express or update their preferences (location, price, property type, style, environment, features, quality, layout, transport, investment priorities).
+   - process_preferences: Use whenever users express or change their preferences including but not limited to location, price, property type, style, environment, features, quality, layout, transport, investment priorities. 
    - search_suburb: Utilize to recommend suitable suburbs based on clearly defined or inferred user preferences. Guide the user conversationally to share their preferences naturally.
    - search_properties: Execute once preferences (especially Suburb location) are sufficiently clear. Clarify briefly if needed, but avoid repetitive questioning.
    - recommend_from_available_properties: Use immediately after property search results are obtained.
-   - web_search: Perform when additional market insights or demographic data is necessary (e.g., economic strength, infrastructure, market trends).
+   - web_search: solve user's inquiry that can't be perfectly solved by other tools or verify the information from other tools.
 4. Natural Language Guidelines:
    - Provide comprehensive yet concise responses, mixing quantitative data (prices, yields, growth statistics) with qualitative insights (lifestyle, amenities).    
    - Proactively suggest adjustments or further refinements only after initial recommendations are given, respecting user autonomy.
@@ -455,7 +419,7 @@ previous user's preferences:
 previous user's requirements:
 {state["search_params"]}
 
-available properties:
+properties searched:
 {state["available_properties"]}
 
 conversation context:
@@ -581,28 +545,47 @@ async def response_node(state: dict) -> AgentMessagesState:
     3. Applying any response-specific processing or formatting
     """
     session_id = state["session_id"]
-
-    ai_messages = [msg for msg in state["messages"] if isinstance(msg, AIMessage)]
-    user_messages = [msg for msg in state["messages"] if isinstance(msg, HumanMessage)]
-    print(f"ai_messages: {ai_messages}")
-    print(f"user_messages: {user_messages}")
-    context = await get_conversation_context(session_id)
-    response = response_llm.invoke([
-        SystemMessage(content=f"""
-You are acting as a reviewer for the final content that will be shown directly to the user.
-Before this response is delivered, your role is to enhance the practicality, fault tolerance, and realistic interactivity of the conversation's final stage.
+    
+    try:
+        # Extract AI and user messages safely
+        ai_messages = [msg for msg in state["messages"] if isinstance(msg, AIMessage)]
+        user_messages = [msg for msg in state["messages"] if isinstance(msg, HumanMessage)]
+        
+        # Log message counts for debugging
+        logger.info(f"AI messages count: {len(ai_messages)}")
+        logger.info(f"User messages count: {len(user_messages)}")
+        
+        # Check if we have necessary messages to process
+        if not ai_messages or not user_messages:
+            logger.warning(f"Missing messages - AI: {len(ai_messages)}, User: {len(user_messages)}")
+            # Create a fallback response if no messages are available
+            response = AIMessage(content="I'm sorry, but I couldn't process your request properly. Could you please try again?")
+        else:
+            # Normal processing flow when messages are available
+            context = await get_conversation_context(session_id)
+            
+            # Debug log the messages we're using
+            logger.debug(f"Using AI message: {ai_messages[-1].content[:100]}...")
+            logger.debug(f"Using user message: {user_messages[-1].content[:100]}...")
+            
+            response = response_llm.invoke([
+                SystemMessage(content=f"""
+You are acting as a guardrail for the final content that will be shown directly to the user.
+Your role is to enhance the practicality, fault tolerance, and realistic interactivity of this response before it is delivered.
 
 Your core tasks include:
 - A final check on grammar and natural language fluency
-- Rewriting any robotic or awkward phrasing
-- Detecting missing context or user preferences
-- Making intelligent judgments and providing concise follow-up suggestions
+- Rewrite any robotic or awkward phrasing
+- Detect missing context or user preferences and prompt the user to clarify
+- Encourage users to share more personalized needs to improve the quality of recommendations
+- Provide concise follow-up suggestions
 
 Optimization Goals:
 - Make the interaction feel more natural and conversational — like a professional and thoughtful property consultant.
 - Intelligently detect if any important steps or preferences were missed earlier and prompt the user to complete them.
 - If preferences were already provided but no matching results are found, proactively offer alternative suggestions or explain why.
-- Limit the number of questions to avoid making the conversation feel like a form — keep it human and natural.
+- Limit the number of questions to avoid turning the conversation into a rigid form — keep it human and natural.
+- Focus on uncovering the user's real intent and priorities, so recommendations can feel tailored and relevant
 
 Here are some references to guide the conversation:
 Always distinguish whether the user is looking to buy for self-occupancy or investment.
@@ -632,24 +615,31 @@ If the user says buying a home to live in, consider these questions to ask:
                       
 Full Conversation Context:
 {context}
-
-AI's thought process for this response:
-{state["messages"][:-1]}
-
-Current Draft Answer to Review: {ai_messages[-1].content}
 """),
-    HumanMessage(content=f"{user_messages[-1].content}"),
-    ]
-)
-    
-    return AgentMessagesState(
-        messages=state["messages"] + [response],
-        session_id=session_id,
-        preferences=state.get("preferences", {}),
-        search_params=state.get("search_params", {}),
-        available_properties=state.get("available_properties", []),
-        latest_recommendation=state.get("latest_recommendation", None)
-    )
+                HumanMessage(content=f"Human Question: {user_messages[-1].content} \n Current Draft Answer to Review: {ai_messages[-1].content}"),
+            ])
+        # Return updated state with response
+        return AgentMessagesState(
+            messages=state["messages"] + [response],
+            session_id=session_id,
+            preferences=state.get("preferences", {}),
+            search_params=state.get("search_params", {}),
+            available_properties=state.get("available_properties", []),
+            latest_recommendation=state.get("latest_recommendation", None)
+        )
+        
+    except Exception as e:
+        logger.error(f"Error in response_node: {str(e)}")
+        # Create error response
+        error_response = AIMessage(content="I encountered an error processing your request. Please try again.")
+        return AgentMessagesState(
+            messages=state["messages"] + [error_response],
+            session_id=session_id,
+            preferences=state.get("preferences", {}),
+            search_params=state.get("search_params", {}),
+            available_properties=state.get("available_properties", []),
+            latest_recommendation=state.get("latest_recommendation", None)
+        )
 
 # Build workflow
 agent_builder = StateGraph(AgentMessagesState)
@@ -676,7 +666,7 @@ agent_builder.add_edge("response", END)
 agent = agent_builder.compile()
 
 # Function declarations
-# print(search_suburb.args_schema.schema_json(indent=2))  # Print full schema as JSON
+print(search_properties.args_schema.schema_json(indent=2))  # Print full schema as JSON
 # print(search_properties.args_schema.schema_json(indent=2))  # Print full schema as JSON
 # print(process_preferences.args_schema.schema_json(indent=2))  # Print full schema as JSON
 # print(recommend_from_available_properties.args_schema.schema_json(indent=2))  # Print full schema as JSON

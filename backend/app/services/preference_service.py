@@ -310,7 +310,7 @@ Generate a valid JSON response with the above structure. Include ONLY fields tha
             await self.chat_storage.save_message(
                 session_id,
                 ConversationMessage(
-                    role="assistant",
+                    role="preference_processor",
                     content="\n".join(log_message),
                     timestamp=datetime.now()
                 )

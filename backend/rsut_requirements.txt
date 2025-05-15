@@ -1,2 +1,2 @@
 # duckduckgo-search 
-duckduckgo-search==8.0.1
+duckduckgo-search==7.5.1

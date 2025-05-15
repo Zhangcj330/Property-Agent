@@ -290,12 +290,12 @@ class PropertyRecommendationResponse(BaseModel):
 
 class ConversationMessage(BaseModel):
     """单条聊天消息模型，支持 user/assistant/tool 消息和类型、元数据"""
-    role: Literal["user", "assistant", "tool"] = Field(..., description="消息角色：'user'、'assistant' 或 'tool'")
+    role: Literal["user", "assistant", "tool", "preference_processor"] = Field(..., description="消息角色：'user'、'assistant' 或 'tool'")
     content: str = Field(..., description="消息内容")
     type: Optional[str] = Field(None, description="消息类型，如 'recommendation', 'search_result', 'tool' 等")
     metadata: Optional[Dict[str, Any]] = Field(default=None, description="额外元数据")
     timestamp: datetime = Field(default_factory=datetime.now)
-    recommendation: Optional[PropertyRecommendationResponse] = Field(default=None, description="结构化推荐结果")
+    recommendation: Optional[PropertyRecommendationResponse] = Field(default=None, description="结构化推荐结果") 
 
 class ChatSession(BaseModel):
     """聊天会话模型"""
