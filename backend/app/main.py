@@ -8,6 +8,7 @@ from datetime import datetime
 import logging
 import os
 import json
+import uuid
 
 # No duplicate logging configuration here - use the one from lambda.py
 logger = logging.getLogger(__name__)
@@ -199,9 +200,25 @@ async def agent_chat_endpoint(chat_input: ChatInput):
             "latest_recommendation": None
         }
 
-        # Run the agent
-        final_state = await agent.ainvoke(initial_state)
-        logger.info("Successfully processed input through agent")
+        # Run the agent with error handling
+        try:
+            final_state = await agent.ainvoke(initial_state)
+            logger.info("Successfully processed input through agent")
+        except Exception as e:
+            # Log the agent execution error
+            logger.error(f"Error during agent execution: {str(e)}", exc_info=True)
+            
+            # Create a graceful fallback state with error message
+            error_message = (
+                "I apologize, but I encountered an issue while processing your request. "
+                "This might be due to a temporary problem. Please try again with a simpler request, "
+                "or provide more details about what you're looking for."
+            )
+            
+            # Use the initial state with added error response
+            final_state = initial_state.copy()
+            from langchain_core.messages import AIMessage
+            final_state["messages"] = initial_state["messages"] + [AIMessage(content=error_message)]
         
         if final_state["messages"]:
             assistant_message = ChatMessage(
@@ -227,11 +244,24 @@ async def agent_chat_endpoint(chat_input: ChatInput):
         return response
         
     except Exception as e:
-        logger.error(f"Error in agent_chat_endpoint: {str(e)}", exc_info=True)
-        raise HTTPException(
-            status_code=500,
-            detail=f"An error occurred while processing your request: {str(e)}"
+        # This is the outer exception handler for the entire endpoint
+        logger.error(f"Critical error in agent_chat_endpoint: {str(e)}", exc_info=True)
+        
+        # Generate a session ID if we don't have one due to early failure
+        session_id = chat_input.session_id if chat_input.session_id else str(uuid.uuid4())
+        
+        # Create a user-friendly error response
+        error_response = ChatResponse(
+            session_id=session_id,
+            response="I'm sorry, but we're experiencing some technical difficulties. Please try again in a moment.",
+            preferences={},
+            search_params={},
+            available_properties=[],
+            latest_recommendation=None
         )
+        
+        # Don't raise HTTPException, return a proper response with error message
+        return error_response
 
 @app.post(f"{v1_prefix}/saved_properties/", tags=["Properties"], status_code=201)
 async def save_property_to_session(
@@ -330,7 +360,6 @@ async def get_presigned_url(image_type: str = "jpeg"):
         file_extension = "jpg" if image_type in ["jpeg", "jpg"] else image_type
         
         # 使用懒加载获取S3客户端
-        import uuid
         s3_client = get_boto3_client('s3')
         
         # 生成唯一的图片键
@@ -370,7 +399,6 @@ async def save_feedback(feedback: FeedbackInput):
     try:
         # 初始化Firestore服务 - 懒加载模式
         firestore_service = get_firestore_service()
-        import uuid
         
         # 如果有图片键，构建完整的S3公共URL
         screenshot_url = None

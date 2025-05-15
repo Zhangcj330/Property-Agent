@@ -172,6 +172,7 @@ cython_debug/
 
 # Firebase key
 Firebase_key.json
+property-agent-prod.json
 
 # Cursor rules
 .cursorrules

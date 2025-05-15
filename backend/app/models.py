@@ -135,8 +135,9 @@ class FirestoreProperty(BaseModel):
         price_is_numeric = False
         
         if response.price:
-            # 处理价格范围 "$X to $Y"
-            price_range_match = re.search(r'\$(\d+(?:,\d+)*)\s+to\s+\$(\d+(?:,\d+)*)', response.price)
+            # 处理所有价格格式
+            # 检查是否为价格范围（"to" 或 "-" 分隔）
+            price_range_match = re.search(r'\$(\d+(?:,\d+)*)\s*(?:to|-)\s*\$(\d+(?:,\d+)*)', response.price)
             if price_range_match:
                 try:
                     min_price = float(price_range_match.group(1).replace(',', ''))
@@ -146,7 +147,7 @@ class FirestoreProperty(BaseModel):
                 except (ValueError, AttributeError):
                     price_value = None
             else:
-                # 提取$后面的数字
+                # 提取单个价格
                 price_match = re.search(r'\$(\d+(?:,\d+)*)', response.price)
                 if price_match:
                     try:

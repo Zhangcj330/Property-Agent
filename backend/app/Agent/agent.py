@@ -17,7 +17,7 @@ from datetime import datetime
 from pydantic import BaseModel, Field
 from langchain_core.messages import SystemMessage, HumanMessage, ToolMessage, AIMessage, ChatMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_core.tools import tool
+from langchain_core.tools import tool, ToolException
 from langgraph.graph import StateGraph, MessagesState, START, END
 
 from app.config import settings
@@ -220,7 +220,7 @@ async def search_properties(
     max_price: Annotated[Optional[float], Field(description="Maximum price")] = None,
     min_bedrooms: Annotated[Optional[int], Field(description="Minimum number of bedrooms")] = None,
     min_bathrooms: Annotated[Optional[int], Field(description="Minimum number of bathrooms")] = None,
-    property_type: Annotated[Optional[List[str]], Field(description="List of property types (house, apartment, unit, townhouse, villa, rural)")] = None,
+    property_type: Annotated[Optional[List[Literal["house", "apartment", "unit", "townhouse", "villa", "rural"]]], Field(description="List of property types")] = None,
     car_parks: Annotated[Optional[int], Field(description="Number of car parks")] = None,
     land_size_from: Annotated[Optional[float], Field(description="Minimum land size in sqm")] = None,
     land_size_to: Annotated[Optional[float], Field(description="Maximum land size in sqm")] = None
@@ -279,11 +279,19 @@ async def search_properties(
         return []
 
 @tool
-async def recommend_from_available_properties() -> PropertyRecommendationResponse:
-    """Recommend the best properties from the current available_properties list in state, based on user preferences.
-    
-    Precondition: This tool should only be used if the state['available_properties'] is not empty. It will generate recommendations from the properties that have just been searched and are available in the current session state.
-    
+async def recommend_from_available_properties(
+    location: Annotated[Optional[str], Field(description="location preference")],
+    property_type: Annotated[Optional[str], Field(description="property type preference")],
+    style: Annotated[Optional[str], Field(description="style preference")],
+    features: Annotated[Optional[str], Field(description="features preference")],
+    layout: Annotated[Optional[str], Field(description="layout preference")],
+    transport: Annotated[Optional[str], Field(description="transport preference")],
+    investment: Annotated[Optional[str], Field(description="investment preference")],
+    school_district: Annotated[Optional[str], Field(description="school district preference")],
+    community: Annotated[Optional[str], Field(description="community preference")]
+) -> PropertyRecommendationResponse:
+    """Recommend the properties from search_properties tool, based on user preferences.
+        
     Returns:
         PropertyRecommendationResponse containing recommended properties
     """
@@ -390,9 +398,21 @@ Use Action to run one of the actions available to you - then return PAUSE.
 Observation will be the result of running those actions.
 At the end of the loop you output an Answer to the user's question.
 
+**IMPORTANT - HANDLING TOOL ERRORS:**
+- When you receive an observation that begins with "ERROR:", this indicates a tool execution failure
+- You must handle this gracefully without blaming the system or exposing technical details
+- Instead, use the error information to:
+  1. Understand what went wrong (parameter issues, missing data, etc.)
+  2. think about alternative approaches or ask for clarification
+  3. Present a helpful, user-friendly explanation
+  4. Try a different tool or approach to accomplish the user's goal
+- Never respond with technical error details or imply the system is broken
+- Frame issues as opportunities for clarification or refinement
+
 Follow these interaction principles:
 1. Adaptive Interaction:
    - Quickly identify essential details such as user's budget, preferred locations, investment goals, and property type.
+   - Bias towards not asking the user for help if you can find the answer yourself.
    - If the user provides clear preferences, proceed directly to recommendations without excessive clarification.
 2. Intelligent Context Awareness:
    - Use contextual information (past preferences, viewed listings, search criteria) intelligently to avoid redundant questions.
@@ -410,8 +430,6 @@ Follow these interaction principles:
 5. Recommendations:
    - Always back recommendations with clear data points and evidence.
    - Avoid mentioning internal tool processes explicitly to maintain a seamless conversational experience.
-
-Your primary objective is to efficiently guide the user to actionable and personalized property recommendations, minimizing unnecessary clarifications while maintaining a friendly, professional interaction style.
 
 previous user's preferences: 
 {state["preferences"]}
@@ -438,6 +456,50 @@ conversation context:
         latest_recommendation=state["latest_recommendation"]
     )
 
+async def safe_tool_call(tool, args, verbose=True):
+    """安全地执行工具调用，捕获并处理所有可能的异常
+    
+    Args:
+        tool: 要调用的工具对象
+        args: 传递给工具的参数
+        verbose: 是否记录详细日志
+    
+    Returns:
+        dict: 包含执行结果或错误信息的字典
+    """
+    tool_name = getattr(tool, "name", str(tool))
+    
+    if verbose:
+        logger.info(f"Using tool: {tool_name}")
+        logger.info(f"Tool arguments: {json.dumps(args, indent=2) if isinstance(args, dict) else args}")
+    
+    try:
+        result = await tool.ainvoke(args)
+        return {
+            "status": "success",
+            "result": result
+        }
+    except ToolException as e:
+        # 工具验证错误（如参数不正确）
+        error_msg = f"I couldn't use the {tool_name} tool correctly: {str(e)}. Let me try a different approach."
+        logger.warning(f"Tool validation error for {tool_name}: {str(e)}")
+        return {
+            "status": "error",
+            "error_type": "validation",
+            "message": error_msg,
+            "exception": e
+        }
+    except Exception as e:
+        # 一般执行错误
+        logger.error(f"Error executing tool {tool_name}: {str(e)}", exc_info=True)
+
+        return {
+            "status": "error",
+            "error_type": "execution",
+            "message": f"Error executing tool {tool_name}: {str(e)}",
+            "exception": e
+        }
+
 async def tool_node(state: Dict[str, Any]) -> AgentMessagesState:
     session_id = state["session_id"]
     # 初始化所有 return 需要的变量，避免 UnboundLocalError
@@ -456,69 +518,73 @@ async def tool_node(state: Dict[str, Any]) -> AgentMessagesState:
         tool = tools_by_name[tool_call["name"]]
         args = tool_call["args"]
         
-        # Add tool usage logging - Replace print with logger
-        logger.info(f"Using tool: {tool.name}")
-        logger.info(f"Tool arguments: {json.dumps(args, indent=2)}")
-        
-        # Add session_id and other state info to tool args
+        # 向参数中添加session_id
         if isinstance(args, dict):
             args["session_id"] = session_id
         
-        # Execute tool
-        observation = await tool.ainvoke(args)
+        # 使用safe_tool_call安全地执行工具
+        response = await safe_tool_call(tool, args)
         
-        # Special handling for preference processing with ambiguity
-        if tool.name == "process_preferences" and isinstance(observation, dict):
-            # Update state with new preferences and search parameters
-            preferences = observation.get("preferences", preferences)
-            search_params = observation.get("search_params", search_params)
-
-        # Special handling for property recommendations
-        elif tool.name == "recommend_from_available_properties":
-            # Get previously recommended properties from chat storage
-            recommendation_history = await chat_storage.get_recommendation_history(session_id)
-            # Filter out previously recommended properties
-            new_properties = [
-                prop for prop in available_properties 
-                if prop.listing_id not in recommendation_history
-            ]
+        # 根据执行结果处理
+        if response["status"] == "success":
+            observation = response["result"]
             
-            if not new_properties:
-                observation = "No new properties to recommend. need to search properties again."
-            else:
-                # Get recommendations using the recommender service
-                observation = await recommender.get_recommendations(
-                    properties=new_properties,
-                    preferences=preferences
+            # 处理特定工具的响应
+            if tool.name == "process_preferences" and isinstance(observation, dict):
+                # 更新状态中的偏好和搜索参数
+                preferences = observation.get("preferences", preferences)
+                search_params = observation.get("search_params", search_params)
+            
+            elif tool.name == "recommend_from_available_properties":
+                # 获取推荐历史
+                recommendation_history = await chat_storage.get_recommendation_history(session_id)
+                # 过滤掉之前推荐的属性
+                new_properties = [
+                    prop for prop in available_properties 
+                    if prop.listing_id not in recommendation_history
+                ]
+                
+                if not new_properties:
+                    observation = "No new properties to recommend. need to search properties again."
+                else:
+                    # 使用推荐服务获取推荐
+                    observation = await recommender.get_recommendations(
+                        properties=new_properties,
+                        preferences=preferences
+                    )
+                    latest_recommendation = observation
+                    logger.info(f"Last recommendation: {latest_recommendation}")
+                
+                # 保存为聊天消息
+                chat_msg = ConversationMessage(
+                    role="tool",
+                    content="Property recommendations generated.",
+                    type="property_recommendation",
+                    recommendation=latest_recommendation if isinstance(latest_recommendation, PropertyRecommendationResponse) else None,
+                    metadata={"tool_call_id": tool_call["id"], "tool_name": tool.name},
+                    timestamp=datetime.now()
                 )
-                latest_recommendation = observation
-                # Replace print with logger
-                logger.info(f"Last recommendation: {latest_recommendation}")
-            # Save as ChatMessage
-            chat_msg = ConversationMessage(
-                role="tool",
-                content="Property recommendations generated.",  # 简要摘要
-                type="property_recommendation",
-                recommendation=latest_recommendation if isinstance(latest_recommendation, PropertyRecommendationResponse) else None,
-                metadata={"tool_call_id": tool_call["id"], "tool_name": tool.name},
-                timestamp=datetime.now()
-            )
-            await chat_storage.save_message(session_id, chat_msg)
-
-        elif tool.name == "search_properties":
-            available_properties = observation
-            # Update available_properties state in chat storage
-            await chat_storage.update_recommendation_state(
-                session_id=session_id,
-                available_properties=available_properties
-            )
-
+                await chat_storage.save_message(session_id, chat_msg)
+            
+            elif tool.name == "search_properties":
+                available_properties = observation
+                # 更新聊天存储中的可用属性状态
+                await chat_storage.update_recommendation_state(
+                    session_id=session_id,
+                    available_properties=available_properties
+                )
+        else:
+            # 处理错误情况
+            observation = f"ERROR: {response['message']}"
+        
+        # 添加工具消息到结果中
         result.append(ToolMessage(
             content=str(observation),
             tool_call_id=tool_call["id"],
             metadata={"type": "property_recommendation"}
         ))
 
+    # 返回更新后的状态
     return AgentMessagesState(
         messages=state["messages"] + result,
         session_id=session_id,
