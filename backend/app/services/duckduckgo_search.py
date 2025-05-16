@@ -254,7 +254,7 @@ class DuckDuckGoSearchResults(BaseTool):  # type: ignore[override, override]
     description: str = (
         "Search the web for real-time information about any topic. Use this tool when you need up-to-date information that may not be available in your training data or when you need to verify current facts."
     )
-    max_results: int = Field(alias="num_results", default=5)
+    max_results: int = Field(alias="num_results", default=10)
     api_wrapper: DuckDuckGoSearchAPIWrapper = Field(
         default_factory=DuckDuckGoSearchAPIWrapper
     )

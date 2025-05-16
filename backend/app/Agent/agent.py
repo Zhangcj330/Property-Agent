@@ -247,7 +247,7 @@ async def search_properties(
     search_request = PropertySearchRequest(**search_params)
     
     search_start = time.time()
-    results = await property_scraper.search_properties(search_request, max_results=5)
+    results = await property_scraper.search_properties(search_request, max_results=15)
     search_end = time.time()
     logger.info(f"Property search took {search_end - search_start:.2f}s, found {len(results)} properties")
     
@@ -418,7 +418,7 @@ Follow these interaction principles:
    - Use contextual information (past preferences, viewed listings, search criteria) intelligently to avoid redundant questions.
    - If a user expresses frustration or impatience, immediately shift towards direct recommendations based on available information.
 3. Efficient Tool Usage:
-   - process_preferences: Use whenever users express or change their preferences including but not limited to location, price, property type, style, environment, features, quality, layout, transport, investment priorities. 
+   - process_preferences: Use whenever users express their preferences or accept recommendation from agent, including but not limited to location, price, property type, style, environment, features, quality, layout, transport, investment priorities.
    - search_suburb: Utilize to recommend suitable suburbs based on clearly defined or inferred user preferences. Guide the user conversationally to share their preferences naturally.
    - search_properties: Execute once preferences (especially Suburb location) are sufficiently clear. Clarify briefly if needed, but avoid repetitive questioning.
    - recommend_from_available_properties: Use immediately after property search results are obtained.
