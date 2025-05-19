@@ -23,6 +23,7 @@ boto3
 aiohttp
 requests
 httpx
+aiofiles
 
 # 网页处理
 beautifulsoup4

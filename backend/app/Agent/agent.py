@@ -5,6 +5,7 @@ import asyncio
 import json
 import logging
 import time
+from functools import wraps
 
 # Add the backend directory to Python path
 backend_dir = Path(__file__).parent.parent.parent
@@ -373,6 +374,61 @@ async def get_conversation_context(session_id: str) -> str:
             context += f"- {msg.role}: {msg.content}\n"
     return context
 
+# Retry decorator for LLM calls
+def retry_llm_invoke(llm_instance, messages, max_retries=3, delay=2):
+    """
+    Retry function for LLM invocations when errors occur.
+    
+    Args:
+        llm_instance: The LLM instance to call
+        messages: Messages to pass to the LLM
+        max_retries: Maximum number of retry attempts (default: 3)
+        delay: Initial delay between retries in seconds (default: 2)
+        
+    Returns:
+        LLM response or raises the last exception after all retries fail
+    """
+    last_exception = None
+    
+    # First attempt
+    try:
+        logger.info("Attempting initial LLM invocation")
+        response = llm_instance.invoke(messages)
+        
+        # Check if response is empty or invalid
+        if response is None or (hasattr(response, 'content') and not response.content):
+            raise ValueError("LLM returned empty response")
+            
+        return response
+    except Exception as e:
+        last_exception = e
+        logger.warning(f"Initial LLM invoke failed: {str(e)}")
+    
+    # Retry attempts if first attempt failed
+    for attempt in range(max_retries - 1):
+        try:
+            # Calculate backoff with jitter
+            wait_time = delay * (2 ** attempt) * (0.5 + 0.5 * (time.time() % 1))
+            logger.info(f"Retrying in {wait_time:.2f} seconds... (attempt {attempt + 1}/{max_retries - 1})")
+            time.sleep(wait_time)
+            
+            # Retry the call
+            logger.info(f"LLM invoke retry attempt {attempt + 1}/{max_retries - 1}")
+            response = llm_instance.invoke(messages)
+            
+            # Check if response is empty or invalid
+            if response is None or (hasattr(response, 'content') and not response.content):
+                raise ValueError("LLM returned empty response")
+                
+            return response
+        except Exception as e:
+            last_exception = e
+            logger.warning(f"LLM invoke retry attempt {attempt + 1} failed: {str(e)}")
+    
+    # All retries failed
+    logger.error(f"All {max_retries} LLM invoke attempts failed. Last error: {str(last_exception)}")
+    raise last_exception
+
 async def llm_call(state: dict) -> AgentMessagesState:
     session_id = state["session_id"]
     # Ensure session exists
@@ -382,9 +438,11 @@ async def llm_call(state: dict) -> AgentMessagesState:
     
     context = await get_conversation_context(session_id)
     
-    response = llm_with_tools.invoke(
-        [
-            SystemMessage(
+    try:
+        response = retry_llm_invoke(
+            llm_with_tools,
+            [
+                SystemMessage(
 content=f"""
 You are an AI property agent assistant specialized in recommending suburbs and properties, providing insightful analyses about property markets, suburbs, and related real estate information.
 
@@ -443,10 +501,14 @@ properties searched:
 conversation context:
 {context}
 """
-            )
-        ]
-        + state["messages"] # single run message, tools call from latest user message
-    )
+                )
+            ]
+            + state["messages"] # single run message, tools call from latest user message
+        )
+    except Exception as e:
+        logger.error(f"All LLM invoke attempts failed in llm_call: {str(e)}", exc_info=True)
+        # Create fallback response that asks the user to try again
+        response = AIMessage(content="I'm having trouble processing your request right now. Could you please try again or rephrase your question?")
     
     return AgentMessagesState(
         messages=state["messages"] + [response],
@@ -634,8 +696,12 @@ async def response_node(state: dict) -> AgentMessagesState:
             logger.debug(f"Using AI message: {ai_messages[-1].content[:100]}...")
             logger.debug(f"Using user message: {user_messages[-1].content[:100]}...")
             
-            response = response_llm.invoke([
-                SystemMessage(content=f"""
+            # Try to get response from LLM with retry and fallback
+            try:
+                response = retry_llm_invoke(
+                    response_llm,
+                    [
+                        SystemMessage(content=f"""
 You are acting as a guardrail for the final content that will be shown directly to the user.
 Your role is to enhance the practicality, fault tolerance, and realistic interactivity of this response before it is delivered.
 
@@ -682,8 +748,23 @@ If the user says buying a home to live in, consider these questions to ask:
 Full Conversation Context:
 {context}
 """),
-                HumanMessage(content=f"Human Question: {user_messages[-1].content} \n Current Draft Answer to Review: {ai_messages[-1].content}"),
-            ])
+                    HumanMessage(content=f"Human Question: {user_messages[-1].content}  \n\nCurrent Draft Answer to Review: {ai_messages[-1].content}"),
+                    ],
+                    max_retries=3
+                )
+            except Exception as llm_error:
+                # All LLM retry attempts failed, use fallback
+                logger.error(f"All LLM retry attempts failed in response_node: {str(llm_error)}")
+                # Return the existing state without adding a new message
+                return AgentMessagesState(
+                    messages=state["messages"],
+                    session_id=session_id,
+                    preferences=state.get("preferences", {}),
+                    search_params=state.get("search_params", {}),
+                    available_properties=state.get("available_properties", []),
+                    latest_recommendation=state.get("latest_recommendation", None)
+                )
+        
         # Return updated state with response
         return AgentMessagesState(
             messages=state["messages"] + [response],
@@ -695,11 +776,17 @@ Full Conversation Context:
         )
         
     except Exception as e:
-        logger.error(f"Error in response_node: {str(e)}")
-        # Create error response
-        error_response = AIMessage(content="I encountered an error processing your request. Please try again.")
+        logger.error(f"Error in response_node: {str(e)}", exc_info=True)
+        # Create fallback response using last AI message if available
+        if ai_messages and len(ai_messages) > 0:
+            logger.info("Using last AI message as fallback due to error")
+            fallback_response = ai_messages[-1]
+        else:
+            logger.warning("No AI messages available for fallback, using generic response")
+            fallback_response = AIMessage(content="I encountered an error processing your request. Please try again.")
+        
         return AgentMessagesState(
-            messages=state["messages"] + [error_response],
+            messages=state["messages"] + [fallback_response],
             session_id=session_id,
             preferences=state.get("preferences", {}),
             search_params=state.get("search_params", {}),
@@ -732,8 +819,8 @@ agent_builder.add_edge("response", END)
 agent = agent_builder.compile()
 
 # Function declarations
-print(search_properties.args_schema.schema_json(indent=2))  # Print full schema as JSON
 # print(search_properties.args_schema.schema_json(indent=2))  # Print full schema as JSON
+# print(search_suburb.args_schema.schema_json(indent=2))  # Print full schema as JSON
 # print(process_preferences.args_schema.schema_json(indent=2))  # Print full schema as JSON
 # print(recommend_from_available_properties.args_schema.schema_json(indent=2))  # Print full schema as JSON
 # print(web_search.args_schema.schema_json(indent=2))  # Print full schema as JSON

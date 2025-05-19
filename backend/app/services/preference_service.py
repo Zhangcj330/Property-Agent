@@ -190,8 +190,6 @@ Generate a valid JSON response with the above structure. Include ONLY fields tha
             SystemMessage(content=prompt),
             HumanMessage(content=f"Based on the conversation history and current state shown above, generate the structured representation of the user's current preferences and search parameters. Include ONLY well-supported preferences and parameters, and identify any ambiguous information that needs clarification.")
         ])
-        print("LLM Response:")
-        print(response.content)
         try:
             # Extract and parse JSON
             content = self._extract_json_from_response(response.content)
