@@ -46,6 +46,8 @@ def get_lambda_handler():
     return _mangum_handler
 
 def handler(event, context):
-    logger.info("Processing Lambda request")
+    logger.info(f"Lambda event: {event}")
     mangum_handler = get_lambda_handler()
-    return mangum_handler(event, context)
+    response = mangum_handler(event, context)
+    logger.info(f"Lambda response: {response}")
+    return response

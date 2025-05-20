@@ -216,7 +216,7 @@ async def process_property(result: PropertySearchResponse) -> FirestoreProperty:
 
 @tool
 async def search_properties(
-    location: Annotated[List[str], Field(description="List of locations to search, format: [STATE-SUBURB-POSTCODE, STATE-SUBURB-POSTCODE, ...]")],
+    location: Annotated[List[str], Field(description="List of suburb locations to search, each location is in format: STATE-SUBURB-POSTCODE")],
     min_price: Annotated[Optional[float], Field(description="Minimum price")] = None,
     max_price: Annotated[Optional[float], Field(description="Maximum price")] = None,
     min_bedrooms: Annotated[Optional[int], Field(description="Minimum number of bedrooms")] = None,
@@ -245,14 +245,15 @@ async def search_properties(
         "land_size_from": land_size_from,
         "land_size_to": land_size_to
     }
-    search_request = PropertySearchRequest(**search_params)
-    
-    search_start = time.time()
-    results = await property_scraper.search_properties(search_request, max_results=15)
-    search_end = time.time()
-    logger.info(f"Property search took {search_end - search_start:.2f}s, found {len(results)} properties")
-    
     try:
+        search_request = PropertySearchRequest(**search_params)
+        
+        search_start = time.time()
+        results = await property_scraper.search_properties(search_request, max_results=15)
+        
+        search_end = time.time()
+        logger.info(f"Property search took {search_end - search_start:.2f}s, found {len(results)} properties")
+        
         # 限制并发处理的批次大小，每批处理2个属性
         batch_size = 10
         all_properties = []
@@ -277,8 +278,8 @@ async def search_properties(
         logger.error(f"Error in concurrent property processing: {str(e)}")
         overall_end = time.time()
         logger.info(f"Failed search_properties took {overall_end - overall_start:.2f}s")
-        return []
-
+        return str(e)
+    
 @tool
 async def recommend_from_available_properties(
     location: Annotated[Optional[str], Field(description="location preference")],
@@ -392,11 +393,9 @@ def retry_llm_invoke(llm_instance, messages, max_retries=3, delay=2):
     
     # First attempt
     try:
-        logger.info("Attempting initial LLM invocation")
         response = llm_instance.invoke(messages)
-        
         # Check if response is empty or invalid
-        if response is None or (hasattr(response, 'content') and not response.content):
+        if response is None:
             raise ValueError("LLM returned empty response")
             
         return response
@@ -417,7 +416,7 @@ def retry_llm_invoke(llm_instance, messages, max_retries=3, delay=2):
             response = llm_instance.invoke(messages)
             
             # Check if response is empty or invalid
-            if response is None or (hasattr(response, 'content') and not response.content):
+            if response is None or (isinstance(response, AIMessage) and not response.content):
                 raise ValueError("LLM returned empty response")
                 
             return response
@@ -704,7 +703,8 @@ async def response_node(state: dict) -> AgentMessagesState:
                         SystemMessage(content=f"""
 You are acting as a guardrail for the final content that will be shown directly to the user.
 Your role is to enhance the practicality, fault tolerance, and realistic interactivity of this response before it is delivered.
-
+ONLY output the final response to the user, no other content.
+                                      
 Your core tasks include:
 - A final check on grammar and natural language fluency
 - Rewrite any robotic or awkward phrasing

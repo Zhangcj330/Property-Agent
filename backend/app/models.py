@@ -95,9 +95,9 @@ class InvestmentInfo(BaseModel):
 class PlanningInfo(BaseModel):
     """Planning information for a property"""
     zone_name: Optional[str] = None
-    height_limit: Optional[float] = None
+    height_limit: Optional[str] = None
     floor_space_ratio: Optional[float] = None
-    min_lot_size: Optional[float] = None
+    min_lot_size: Optional[str] = None
     is_heritage: bool = False
     flood_risk: bool = False
     landslide_risk: bool = False

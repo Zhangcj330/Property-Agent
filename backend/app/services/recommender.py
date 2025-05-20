@@ -52,19 +52,32 @@ class PropertyRecommender:
                 "User Preferences:\n"
                 f"{preferences}\n\n"
                 "For each property, provide the following structure:\n"
-                "{\n"
-                '  "property_id": "listing ID of the property",\n'
-                '  "score": float between 0.0-1.0 representing match quality,\n'
-                '  "highlights": ["list", "of", "positive features"],\n'
-                '  "concerns": ["list", "of", "negative features"],\n'
-                '  "explanation": "Brief explanation of the recommendation reasoning"\n'
+                "{\n"   
+                "  property_id (string): The listing ID of the property.\n"
+                "  score (number, between 0.0 and 1.0): The match quality score.\n"
+                "  highlights (array of strings): List of positive features.\n"
+                "  concerns (array of strings): List of negative features.\n"
+                "  explanation (string): Brief explanation of the recommendation reasoning.\n"
                 "}\n\n"
                 "Please ensure you include all these fields for each property.\n"
-                "Score each property from 0.0 (poor match) to 1.0 (perfect match) based on how well it meets the preferences.\n"
+                "Score each property from 0.00 (poor match) to 1.00 (perfect match) based on how well it meets the preferences.\n"
                 "Include key highlights that match the user's preferences.\n"
                 "List any concerns or mismatches with preferences.\n"
                 "Provide a brief explanation about why each property is recommended or not.\n\n"
                 f"Return analysis for all properties, sorted by match score (highest first)."
+                "Only output the final response to the user, no other content."
+                """Example:
+[
+  {
+    "property_id": "listing-123456",
+    "score": 0.92,
+    "highlights": ["Great location", "Spacious backyard"],
+    "concerns": ["Needs renovation"],
+    "explanation": "This property matches most of the user's preferences, but requires some renovation."
+  },
+  ...
+    ]
+            """
             )
 
             messages = [
@@ -210,3 +223,4 @@ class PropertyRecommender:
                     )
                 )
             return PropertyRecommendationResponse(properties=response_properties) 
+     

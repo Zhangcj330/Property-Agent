@@ -9,6 +9,7 @@ import logging
 import os
 import json
 import uuid
+from fastapi.encoders import jsonable_encoder
 
 # No duplicate logging configuration here - use the one from lambda.py
 logger = logging.getLogger(__name__)
@@ -157,12 +158,6 @@ class PresignedUrlResponse(BaseModel):
 # v1 API endpoints
 v1_prefix = "/api/v1"
 
-# 添加直接的聊天路径
-@app.post("/agent/chat")
-async def direct_agent_chat(chat_input: ChatInput):
-    """没有前缀的聊天端点，直接调用主函数"""
-    return await agent_chat_endpoint(chat_input)
-
 @app.post(f"{v1_prefix}/agent/chat", tags=["Agent"], response_model=ChatResponse)
 async def agent_chat_endpoint(chat_input: ChatInput):
     """Process chat messages using the LangGraph agent"""
@@ -203,7 +198,6 @@ async def agent_chat_endpoint(chat_input: ChatInput):
         # Run the agent with error handling
         try:
             final_state = await agent.ainvoke(initial_state)
-            logger.info("Successfully processed input through agent")
         except Exception as e:
             # Log the agent execution error
             logger.error(f"Error during agent execution: {str(e)}", exc_info=True)
@@ -240,8 +234,8 @@ async def agent_chat_endpoint(chat_input: ChatInput):
             latest_recommendation=final_state["latest_recommendation"]
         )
         
-        logger.info(f"Returning agent response: {response}")
-        return response
+        logger.info(f"Returning agent response: {response} (type: {type(response)})")
+        return jsonable_encoder(response)
         
     except Exception as e:
         # This is the outer exception handler for the entire endpoint

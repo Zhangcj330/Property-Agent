@@ -57,7 +57,7 @@ class PlanningInfo(BaseModel):
     location: Location
     # Planning data
     zone_name: Optional[str] = None
-    height_limit: Optional[float] = None
+    height_limit: Optional[str] = None
     floor_space_ratio: Optional[float] = None
     min_lot_size: Optional[str] = None
     is_heritage: bool = False
@@ -328,11 +328,30 @@ async def get_all_planning_info(address: str) -> PlanningInfo:
                             if layer_name == 'zoning':
                                 planning_info.zone_name = attrs.get('LAY_CLASS')
                             elif layer_name == 'height':
-                                planning_info.height_limit = attrs.get('MAX_B_H') + ' ' + attrs.get('UNITS')
+                                max_b_h = attrs.get('MAX_B_H')
+                                units = attrs.get('UNITS', '')
+                                if max_b_h is not None:
+                                    if isinstance(max_b_h, float) and max_b_h.is_integer():
+                                        max_b_h_str = str(int(max_b_h))
+                                    else:
+                                        max_b_h_str = str(max_b_h)
+                                    planning_info.height_limit = f"{max_b_h_str} {units}".strip()
+                                else:
+                                    planning_info.height_limit = None
                             elif layer_name == 'fsr':
                                 planning_info.floor_space_ratio = attrs.get('FSR')
                             elif layer_name == 'lot_size':
-                                planning_info.min_lot_size = attrs.get('LOT_SIZE') + ' ' + attrs.get('UNITS') 
+                                lot_size = attrs.get('LOT_SIZE')
+                                units = attrs.get('UNITS', '')
+                                if lot_size is not None:
+                                    # 格式化 float，去掉无意义的小数点
+                                    if isinstance(lot_size, float) and lot_size.is_integer():
+                                        lot_size_str = str(int(lot_size))
+                                    else:
+                                        lot_size_str = str(lot_size)
+                                    planning_info.min_lot_size = f"{lot_size_str} {units}".strip()
+                                else:
+                                    planning_info.min_lot_size = None
                             elif layer_name == 'heritage':
                                 planning_info.is_heritage = True
                         else:
