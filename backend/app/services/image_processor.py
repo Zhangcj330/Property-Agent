@@ -60,10 +60,12 @@ class PropertyAnalysis(BaseModel):
     interior_features: InteriorFeatures
     interior_quality_style: InteriorQualityStyle
     environment: Environment
+    property_description_on_user_preference: Optional[str] = Field(None, description="property description based on the user's personal preferences")
 
 # Add API request/response models
 class ImageAnalysisRequest(BaseModel):
     image_urls: List[HttpUrl] = Field(..., description="List of URLs of property images to analyze")
+    preferences: Optional[str] = Field(None, description="User personal preferences for the property")
 
 class ImageProcessor:
     def __init__(self):
@@ -105,7 +107,7 @@ class ImageProcessor:
                 detail=f"Failed to retrieve image from {image_url}. Error: {str(e)}"
             )
 
-    async def analyze_property_image(self, request: ImageAnalysisRequest) -> PropertyAnalysis:
+    async def analyze_property_image(self, request: ImageAnalysisRequest, preferences: Optional[str] = None) -> PropertyAnalysis:
         """Analyze property images and return structured analysis"""
         overall_start = time.time()
         try:
@@ -121,6 +123,8 @@ class ImageProcessor:
             prompt = f"""Analyze property images in detail. 
             Focus on real estate relevant details. Be specific about materials, finishes, and architectural elements.
             For quality score, consider factors like materials, maintenance, design coherence, and overall appeal.
+            if user has provided thier preference: {request.preferences}
+            generate the property_description_on_user_preference. 
             
             {format_instructions}"""
 

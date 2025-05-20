@@ -3,6 +3,7 @@ from typing import Optional, List, Dict, Tuple, Any, Union
 from typing_extensions import TypedDict, Literal
 from datetime import datetime
 import re
+from app.services.image_processor import PropertyAnalysis
 
 class UserPreference(TypedDict):
     """User preference for property search"""
@@ -121,7 +122,7 @@ class FirestoreProperty(BaseModel):
     metadata: PropertyMetadata = Field(default_factory=PropertyMetadata)
     
     # Analysis data (can be null)
-    analysis: Optional[Dict[str, Any]] = None
+    analysis: Optional[PropertyAnalysis] = None
     
     # Investment and planning information
     investment_info: InvestmentInfo = Field(default_factory=InvestmentInfo)

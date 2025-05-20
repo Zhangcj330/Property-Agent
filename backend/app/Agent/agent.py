@@ -97,23 +97,23 @@ async def get_session_state(session_id: str) -> dict:
         "search_params": session.search_params or {}
     }
 
-async def process_property(result: PropertySearchResponse) -> FirestoreProperty:
+async def process_property(result: PropertySearchResponse, preferences: Optional[str] = None) -> FirestoreProperty:
     # Convert to FirestoreProperty
     import time
     start_time = time.time()
     
     firestore_property = FirestoreProperty.from_search_response(result)
     
-    # Check if property exists in Firestore with analysis
-    firestore_start = time.time()
-    stored_property = await firestore_service.get_property(firestore_property.listing_id)
-    firestore_end = time.time()
-    logger.info(f"Firestore get_property took {firestore_end - firestore_start:.2f}s for {firestore_property.listing_id}")
+    # # Check if property exists in Firestore with analysis
+    # firestore_start = time.time()
+    # stored_property = await firestore_service.get_property(firestore_property.listing_id)
+    # firestore_end = time.time()
+    # logger.info(f"Firestore get_property took {firestore_end - firestore_start:.2f}s for {firestore_property.listing_id}")
     
-    if stored_property and stored_property.analysis:
-        # Use existing analysis if available
-        logger.info(f"Using cached property data for {firestore_property.listing_id}")
-        return stored_property
+    # # If property exists in Firestore and has analysis and preference is none or empty,  use existing analysis
+    # if stored_property and stored_property.analysis:
+    #     logger.info(f"Using cached property data for {firestore_property.listing_id}")
+    #     return stored_property
     
     # 直接创建任务对象，不使用内部异步函数包装
     tasks = []
@@ -136,7 +136,7 @@ async def process_property(result: PropertySearchResponse) -> FirestoreProperty:
     if firestore_property.media.image_urls:
         image_task_start = time.time()
         image_task = asyncio.create_task(image_processor.analyze_property_image(
-            ImageAnalysisRequest(image_urls=firestore_property.media.image_urls)
+            ImageAnalysisRequest(image_urls=firestore_property.media.image_urls , preferences=preferences)
         ))
         tasks.append(image_task)
         task_infos['image_task'] = {
@@ -195,18 +195,22 @@ async def process_property(result: PropertySearchResponse) -> FirestoreProperty:
             if isinstance(image_result, Exception):
                 logger.error(f"Error in image analysis for {firestore_property.listing_id}: {image_result}")
             else:
+                # image_result delete perference field
+                if isinstance(image_result, dict):
+                    image_result = PropertyAnalysis.model_validate(image_result)
                 firestore_property.analysis = image_result
                 logger.info(f"Image analysis completed for {firestore_property.listing_id} in {image_duration:.2f}s (analyzed {task_infos['image_task']['image_count']} images)")
-                
+
+        print(firestore_property)          
     except Exception as e:
         logger.error(f"Error in concurrent processing for {firestore_property.listing_id}: {str(e)}")
     
     # 如果需要保存属性数据
-    if not stored_property:
-        save_start = time.time()
-        await firestore_service.save_property(firestore_property)
-        save_end = time.time()
-        logger.info(f"Final save_property took {save_end - save_start:.2f}s for {firestore_property.listing_id}")
+    # if not stored_property:
+    #     save_start = time.time()
+    #     await firestore_service.save_property(firestore_property)
+    #     save_end = time.time()
+    #     logger.info(f"Final save_property took {save_end - save_start:.2f}s for {firestore_property.listing_id}")
     
     total_time = time.time() - start_time
     logger.info(f"Total process_property took {total_time:.2f}s for {firestore_property.listing_id}")
@@ -224,7 +228,8 @@ async def search_properties(
     property_type: Annotated[Optional[List[Literal["house", "apartment", "unit", "townhouse", "villa", "rural"]]], Field(description="List of property types")] = None,
     car_parks: Annotated[Optional[int], Field(description="Number of car parks")] = None,
     land_size_from: Annotated[Optional[float], Field(description="Minimum land size in sqm")] = None,
-    land_size_to: Annotated[Optional[float], Field(description="Maximum land size in sqm")] = None
+    land_size_to: Annotated[Optional[float], Field(description="Maximum land size in sqm")] = None,
+    preferences: Annotated[Optional[str], Field(description="User preferences for the property")] = None
 ) -> List[FirestoreProperty]:
     """Fetch listing properties inside a suburb under given constraints.
     
@@ -249,7 +254,7 @@ async def search_properties(
         search_request = PropertySearchRequest(**search_params)
         
         search_start = time.time()
-        results = await property_scraper.search_properties(search_request, max_results=15)
+        results = await property_scraper.search_properties(search_request, max_results=5)
         
         search_end = time.time()
         logger.info(f"Property search took {search_end - search_start:.2f}s, found {len(results)} properties")
@@ -263,7 +268,7 @@ async def search_properties(
             batch = results[i:i+batch_size]
             logger.info(f"Processing batch {i//batch_size + 1}/{(len(results) + batch_size - 1)//batch_size} with {len(batch)} properties")
             
-            batch_props = await asyncio.gather(*[process_property(result) for result in batch])
+            batch_props = await asyncio.gather(*[process_property(result, preferences) for result in batch])
             valid_props = [prop for prop in batch_props if prop is not None]
             
             all_properties.extend(valid_props)

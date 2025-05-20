@@ -42,6 +42,8 @@ class PropertyRecommender:
                     f"Bathrooms: {prop.basic_info.bathrooms_count}\n"
                     f"Type: {prop.basic_info.property_type}\n"
                     f"Image Analysis: {str(prop.analysis) if prop.analysis else 'No analysis'}\n"
+                    f"investment_info: {prop.investment_info}\n"
+                    f"planning_info: {prop.planning_info}\n"
                 )
                 properties_summary.append(summary)
 
