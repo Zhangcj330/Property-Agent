@@ -17,7 +17,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field
 from langchain_core.messages import SystemMessage, HumanMessage, ToolMessage, AIMessage, ChatMessage
-from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_openai import ChatOpenAI
 from langchain_core.tools import tool, ToolException
 from langgraph.graph import StateGraph, MessagesState, START, END
 
@@ -53,16 +53,26 @@ investment_service = InvestmentService()
 sql_service = SQLService()  # Initialize SQL service
 
 # Default LLM
-llm = ChatGoogleGenerativeAI(
-    api_key=settings.GEMINI_API_KEY,
-    base_url=settings.BASE_URL,
-    model="gemini-2.5-flash-preview-04-17",
+# llm = ChatGoogleGenerativeAI(
+#     api_key=settings.GEMINI_API_KEY,
+#     base_url=settings.BASE_URL,
+#     model="gemini-2.5-flash-preview-04-17",
+# )
+
+# response_llm = ChatGoogleGenerativeAI(
+#     api_key=settings.GEMINI_API_KEY,
+#     base_url=settings.BASE_URL,
+#     model="gemini-2.0-flash",
+# )
+
+llm = ChatOpenAI(
+    api_key=settings.OPENAI_API_KEY,
+    model="gpt-4o",
 )
 
-response_llm = ChatGoogleGenerativeAI(
-    api_key=settings.GEMINI_API_KEY,
-    base_url=settings.BASE_URL,
-    model="gemini-2.0-flash",
+response_llm = ChatOpenAI(
+    api_key=settings.OPENAI_API_KEY,
+    model="gpt-4o",
 )
 
 logger = logging.getLogger(__name__)

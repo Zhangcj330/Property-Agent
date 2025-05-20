@@ -9,6 +9,7 @@ langchain
 langgraph
 langchain-google-genai
 google-generativeai
+langchain_openai
 openai
 
 # 数据处理和存储
