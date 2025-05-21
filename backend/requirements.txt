@@ -10,6 +10,7 @@ langgraph
 langchain-google-genai
 google-generativeai
 openai
+langchain-deepseek
 
 # 数据处理和存储
 pydantic

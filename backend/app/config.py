@@ -58,5 +58,6 @@ class Settings:
     DOMAIN_API_KEY: str = os.getenv("DOMAIN_API_KEY", "")
     BASE_URL: str = os.getenv("BASE_URL", "https://generativelanguage.googleapis.com/v1beta/openai/")
     FIREBASE_CONFIG: dict = FIREBASE_CONFIG
+    DEEPSEEK_API_KEY: str = os.getenv("DEEPSEEK_API_KEY", "")
 
 settings = Settings() 

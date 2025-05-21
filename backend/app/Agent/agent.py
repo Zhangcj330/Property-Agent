@@ -17,7 +17,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field
 from langchain_core.messages import SystemMessage, HumanMessage, ToolMessage, AIMessage, ChatMessage
-from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_deepseek import ChatDeepSeek
 from langchain_core.tools import tool, ToolException
 from langgraph.graph import StateGraph, MessagesState, START, END
 
@@ -52,17 +52,17 @@ firestore_service = FirestoreService()
 investment_service = InvestmentService()
 sql_service = SQLService()  # Initialize SQL service
 
-# Default LLM
-llm = ChatGoogleGenerativeAI(
-    api_key=settings.GEMINI_API_KEY,
-    base_url=settings.BASE_URL,
-    model="gemini-2.5-flash-preview-04-17",
+# Default LLM 
+# DeepSeek-R1, specified via model="deepseek-reasoner", does not support tool calling or structured output. 
+# Those features are supported by DeepSeek-V3 (specified via model="deepseek-chat"
+llm = ChatDeepSeek(
+    api_key=settings.DEEPSEEK_API_KEY,
+    model="deepseek-chat",
 )
 
-response_llm = ChatGoogleGenerativeAI(
-    api_key=settings.GEMINI_API_KEY,
-    base_url=settings.BASE_URL,
-    model="gemini-2.0-flash",
+response_llm = ChatDeepSeek(
+    api_key=settings.DEEPSEEK_API_KEY,
+    model="deepseek-chat",
 )
 
 logger = logging.getLogger(__name__)
