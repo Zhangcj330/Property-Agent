@@ -753,7 +753,7 @@ If the user says buying a home to live in, consider these questions to ask:
 Full Conversation Context:
 {context}
 """),
-                    HumanMessage(content=f"Human Question: {user_messages[-1].content}  \n\nCurrent Draft Answer to Review: {ai_messages[-1].content}"),
+                    HumanMessage(content=f"Human Question: <user_question>{user_messages[-1].content}</user_question>  \n\nCurrent Draft Answer to Review: <draft_answer>{ai_messages[-1].content}</draft_answer>   \n\nPlease review the draft answer and provide a final response to the user."),
                     ],
                     max_retries=3
                 )
