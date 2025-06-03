@@ -26,7 +26,7 @@ class DuckDuckGoSearchAPIWrapper(BaseModel):
     """
     Options: strict, moderate, off
     """
-    time: Optional[str] = "y"
+    time: Optional[str] = None
     """
     Options: d, w, m, y
     """

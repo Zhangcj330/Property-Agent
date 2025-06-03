@@ -341,11 +341,12 @@ async def search_suburb(
                 - min_price/max_price: float - Price range for properties
                 - min_rental_yield/max_rental_yield: float - Rental yield percentage
                 - min_growth/max_growth: float - Property value growth rate
-                - distance_to_cbd: float - Maximum distance to CBD in km
+                - distance_to_nearest_cbd: float - Maximum distance to nearest CBD in km
                 - min_income/max_income: float - Weekly household income range
                 - family_percentage: float - Percentage of family households
                 - vacancy_rate: float - Property vacancy rate
                 - days_on_market: int - Average days properties stay on market
+                - distance_to_state_cbd: float - Maximum distance to State CBD in km
     
     Returns:
         dict: A dictionary containing the query, results and any error messages
