@@ -62,7 +62,7 @@ llm = ChatGoogleGenerativeAI(
 response_llm = ChatGoogleGenerativeAI(
     api_key=settings.GEMINI_API_KEY,
     base_url=settings.BASE_URL,
-    model="gemini-2.0-flash",
+    model="gemini-2.5-flash-preview-04-17",
 )
 
 logger = logging.getLogger(__name__)
