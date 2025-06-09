@@ -159,7 +159,7 @@ Your Responsibilities:
 4. Use meaningful column aliases for any computed values.
 5. Use appropriate filters, sorting, or grouping based on user needs.
 6. Limit results to a reasonable number (e.g., LIMIT 10) unless specified otherwise.
-7. If possible, apply multiple sorting criteria to recommend options that best match the user's needs.
+7. Apply multiple sorting criteria to recommend suburb that best match the user's Intent.
 
 Rules:
 - Generate **only** the raw SQL query (no explanations, markdown, or comments).

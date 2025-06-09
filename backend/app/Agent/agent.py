@@ -16,6 +16,8 @@ from typing import List, Dict, Optional, Any, Annotated
 from datetime import datetime
 
 from pydantic import BaseModel, Field
+from pydantic.types import StringConstraints
+
 from langchain_core.messages import SystemMessage, HumanMessage, ToolMessage, AIMessage, ChatMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.tools import tool, ToolException
@@ -149,8 +151,6 @@ async def process_property(result: PropertySearchResponse, preferences: Optional
         investment_start = time.time()
         investment_metrics = investment_service.get_investment_metrics(
             suburb=firestore_property.basic_info.suburb,
-            postcode=firestore_property.basic_info.postcode,
-            bedrooms=firestore_property.basic_info.bedrooms_count or 2
         )
         investment_end = time.time()
         task_times['investment_metrics'] = investment_end - investment_start
@@ -220,7 +220,8 @@ async def process_property(result: PropertySearchResponse, preferences: Optional
 
 @tool
 async def search_properties(
-    location: Annotated[List[str], Field(description="List of suburb locations to search, each location is in format: STATE-SUBURB-POSTCODE")],
+    location: Annotated[list[Annotated[str, StringConstraints(pattern=r"^[A-Z]{2,}-[A-Za-z ]+-\d{4}$")]],
+                        Field(description="List of suburb locations to search, each location is in format: STATE-SUBURB-POSTCODE")],
     min_price: Annotated[Optional[float], Field(description="Minimum price")] = None,
     max_price: Annotated[Optional[float], Field(description="Maximum price")] = None,
     min_bedrooms: Annotated[Optional[int], Field(description="Minimum number of bedrooms")] = None,
@@ -254,7 +255,7 @@ async def search_properties(
         search_request = PropertySearchRequest(**search_params)
         
         search_start = time.time()
-        results = await property_scraper.search_properties(search_request, max_results=5)
+        results = await property_scraper.search_properties(search_request, max_results=8)
         
         search_end = time.time()
         logger.info(f"Property search took {search_end - search_start:.2f}s, found {len(results)} properties")
@@ -287,20 +288,12 @@ async def search_properties(
     
 @tool
 async def recommend_from_available_properties(
-    location: Annotated[Optional[str], Field(description="location preference")],
-    property_type: Annotated[Optional[str], Field(description="property type preference")],
-    style: Annotated[Optional[str], Field(description="style preference")],
-    features: Annotated[Optional[str], Field(description="features preference")],
-    layout: Annotated[Optional[str], Field(description="layout preference")],
-    transport: Annotated[Optional[str], Field(description="transport preference")],
-    investment: Annotated[Optional[str], Field(description="investment preference")],
-    school_district: Annotated[Optional[str], Field(description="school district preference")],
-    community: Annotated[Optional[str], Field(description="community preference")]
+    preferences: Annotated[Optional[str], Field(default=None, description="Comprehensive user preferences for property recommendation, including location, property type, style, features, layout, transport, investment goals, school district, and community preferences")] = None
 ) -> PropertyRecommendationResponse:
-    """Recommend the properties from search_properties tool, based on user preferences.
+    """Rank properties from search_properties results and generate personlized property report/ property card for user.
         
     Returns:
-        PropertyRecommendationResponse containing recommended properties
+        PropertyRecommendationResponse containing top 2 properties and personalized property report/ property card
     """
     # This is just a placeholder - actual properties will be injected in tool_node
     return PropertyRecommendationResponse(properties=[])
@@ -328,10 +321,11 @@ async def process_preferences(session_id: str, user_message: Annotated[str, Fiel
         }
 @tool()
 async def search_suburb(
-    query: Annotated[str, Field(description="comprehensive description of the user's house preferences of the suburb based on the context")],
+    query: Annotated[str, Field(description="comprehensive and complete description of the user's house preferences of the suburb based on the context")],
     filters: Annotated[list[str], Field(description="list of filter conditions for suburb search")] = [],
 ) -> dict:
-    """Search for suburbs based on preferences for houses (e.g., family-friendly, high growth potential, good rental yield) at a broader city or regional level, rather than focusing on specific streets or neighborhoods.
+    """can be use for search suburbs based on preferences for houses (e.g., family-friendly, high growth potential, good rental yield) at a broader city or regional level, rather than focusing on specific streets or neighborhoods.
+    or extract information for specific suburbs from the context.
 
     Args:
         query: str - comprehensive description of the user's preferences of the suburb based on the context. 
@@ -341,12 +335,12 @@ async def search_suburb(
                 - min_price/max_price: float - Price range for properties
                 - min_rental_yield/max_rental_yield: float - Rental yield percentage
                 - min_growth/max_growth: float - Property value growth rate
-                - distance_to_nearest_cbd: float - Maximum distance to nearest CBD in km
+                - max_distance_to_nearest_cbd: float - Maximum distance to nearest CBD in km
                 - min_income/max_income: float - Weekly household income range
                 - family_percentage: float - Percentage of family households
                 - vacancy_rate: float - Property vacancy rate
                 - days_on_market: int - Average days properties stay on market
-                - distance_to_state_cbd: float - Maximum distance to State CBD in km
+                - max_distance_to_state_cbd: float - Maximum distance to State CBD in km
     
     Returns:
         dict: A dictionary containing the query, results and any error messages
@@ -634,12 +628,18 @@ async def tool_node(state: Dict[str, Any]) -> AgentMessagesState:
                 await chat_storage.save_message(session_id, chat_msg)
             
             elif tool.name == "search_properties":
-                available_properties = observation
-                # 更新聊天存储中的可用属性状态
-                await chat_storage.update_recommendation_state(
-                    session_id=session_id,
-                    available_properties=available_properties
-                )
+                # 只有在成功时才更新available_properties，并且确保observation是正确的类型
+                if isinstance(observation, list) and all(hasattr(prop, 'model_dump') for prop in observation):
+                    available_properties = observation
+                    # 更新聊天存储中的可用属性状态
+                    await chat_storage.update_recommendation_state(
+                        session_id=session_id,
+                        available_properties=available_properties
+                    )
+                else:
+                    # 如果返回的不是预期的类型，记录错误但不更新状态
+                    logger.error(f"search_properties returned unexpected type: {type(observation)}")
+                    observation = "Property search completed but returned unexpected results format."
         else:
             # 处理错误情况
             observation = f"ERROR: {response['message']}"
