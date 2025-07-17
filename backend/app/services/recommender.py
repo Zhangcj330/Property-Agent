@@ -21,7 +21,7 @@ class PropertyRecommender:
         self.client = ChatGoogleGenerativeAI(
             api_key=settings.GEMINI_API_KEY,
             base_url=settings.BASE_URL,
-            model="gemini-2.5-flash-preview-04-17",
+            model="gemini-2.5-flash",
         )
         self.parser = JsonOutputParser(pydantic_schema=List[PropertyRecommendation])
 

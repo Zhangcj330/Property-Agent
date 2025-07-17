@@ -58,13 +58,13 @@ sql_service = SQLService()  # Initialize SQL service
 llm = ChatGoogleGenerativeAI(
     api_key=settings.GEMINI_API_KEY,
     base_url=settings.BASE_URL,
-    model="gemini-2.5-flash-preview-04-17",
+    model="gemini-2.5-flash",
 )
 
 response_llm = ChatGoogleGenerativeAI(
     api_key=settings.GEMINI_API_KEY,
     base_url=settings.BASE_URL,
-    model="gemini-2.5-flash-preview-04-17",
+    model="gemini-2.5-flash",
 )
 
 logger = logging.getLogger(__name__)
