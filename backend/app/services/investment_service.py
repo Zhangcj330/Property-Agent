@@ -3,6 +3,7 @@ from typing import Optional, Dict, List
 from pathlib import Path
 from datetime import datetime
 from dataclasses import dataclass
+from contextlib import contextmanager
 
 @dataclass
 class InvestmentMetrics:
@@ -17,18 +18,43 @@ class InvestmentMetrics:
 class InvestmentService:
     def __init__(self):
         """Initialize the investment service with DuckDB database connection"""
-        current_dir = Path(__file__).parent
-        # Database is in backend/db/ directory
-        db_path = current_dir.parent.parent / "db" / "suburb_data.duckdb"
+        # Use project root as base, matching sql_service.py
+        root_dir = Path(__file__).parent.parent.parent
+        db_path = root_dir / "db" / "suburb_data.duckdb"
         self.db_path = str(db_path)
         
         # Test connection to ensure database is accessible
         self._test_connection()
-    
+
+    @contextmanager
+    def _get_connection(self, max_retries: int = 3, retry_delay: float = 1.0):
+        """Get a database connection with proper error handling and automatic cleanup"""
+        import time
+        conn = None
+        last_error = None
+        for attempt in range(max_retries):
+            try:
+                conn = duckdb.connect(self.db_path, read_only=True)
+                break
+            except Exception as e:
+                last_error = e
+                if attempt < max_retries - 1:
+                    time.sleep(retry_delay)
+        if not conn:
+            raise Exception(f"Failed to connect to database after {max_retries} attempts: {str(last_error)}")
+        try:
+            yield conn
+        finally:
+            if conn:
+                try:
+                    conn.close()
+                except:
+                    pass
+
     def _test_connection(self):
         """Test database connection and verify table exists"""
         try:
-            with duckdb.connect(self.db_path,read_only=True) as conn:
+            with self._get_connection() as conn:
                 # Verify suburbs table exists
                 tables = conn.execute("SHOW TABLES").fetchall()
                 table_names = [table[0] for table in tables]
@@ -36,7 +62,7 @@ class InvestmentService:
                     raise Exception(f"Required 'suburbs' table not found in database. Available tables: {table_names}")
         except Exception as e:
             raise Exception(f"Failed to connect to database at {self.db_path}: {str(e)}")
-    
+
     def get_investment_metrics(self, suburb: str) -> InvestmentMetrics:
         """Get core investment metrics for a suburb from DuckDB
         
@@ -49,7 +75,7 @@ class InvestmentService:
         try:
             metrics = InvestmentMetrics(suburb=suburb)
             
-            with duckdb.connect(self.db_path,read_only=True) as conn:
+            with self._get_connection() as conn:
                 # Query suburb data with case-insensitive search
                 query = """
                 SELECT 
