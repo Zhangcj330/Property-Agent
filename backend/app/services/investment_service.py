@@ -28,7 +28,7 @@ class InvestmentService:
     def _test_connection(self):
         """Test database connection and verify table exists"""
         try:
-            with duckdb.connect(self.db_path) as conn:
+            with duckdb.connect(self.db_path,read_only=True) as conn:
                 # Verify suburbs table exists
                 tables = conn.execute("SHOW TABLES").fetchall()
                 table_names = [table[0] for table in tables]
@@ -49,7 +49,7 @@ class InvestmentService:
         try:
             metrics = InvestmentMetrics(suburb=suburb)
             
-            with duckdb.connect(self.db_path) as conn:
+            with duckdb.connect(self.db_path,read_only=True) as conn:
                 # Query suburb data with case-insensitive search
                 query = """
                 SELECT 
